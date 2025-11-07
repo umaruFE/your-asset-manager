@@ -1,28 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, createContext, useContext } from 'react';
-import { initializeApp } from "firebase/app";
-import { 
-  getAuth, 
-  signInAnonymously, 
-  onAuthStateChanged,
-  signInWithCustomToken,
-  signOut // Added signOut import for completeness
-} from "firebase/auth";
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  getDocs, 
-  onSnapshot, 
-  writeBatch,
-  addDoc,
-  setDoc,
-  Timestamp,
-  query,
-  where,
-  deleteDoc,
-  updateDoc,
-  setLogLevel
-} from "firebase/firestore";
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 // --- 图标 (Icons remain the same) ---
 const Check = ({ className }) => (
@@ -120,267 +96,137 @@ const RefreshCw = ({ className }) => (
 );
 
 
-// --- Firebase 初始化 (支持 Canvas 全局变量和本地 .env 配置) ---
+// --- LocalStorage Setup ---
+const LOCAL_STORAGE_KEY = 'ASSET_MANAGER_V2_DATA';
+const CURRENT_USER_ID_KEY = 'ASSET_MANAGER_CURRENT_USER_ID';
 
-let db;
-let auth;
-let firebaseInitializationError = null;
+/** Generates a simple unique ID */
+const generateId = () => Date.now().toString(36) + Math.random().toString(36).substring(2);
 
-const isCanvasEnvironment = typeof __app_id !== 'undefined';
-
-let firebaseConfig = {};
-let appId = 'default-asset-manager';
-let initialAuthToken = null;
-
-if (isCanvasEnvironment) {
-  // --- Canvas 环境: 优先使用 Canvas 注入的全局变量 ---
-  appId = __app_id;
-  try {
-    firebaseConfig = JSON.parse(__firebase_config);
-    initialAuthToken = __initial_auth_token;
-    console.log("Using Canvas injected Firebase Config.");
-  } catch (e) {
-    firebaseInitializationError = "Canvas environment: Failed to parse __firebase_config.";
-  }
-} else {
-  // --- ⚠️ START: LOCAL DEV CONFIG HERE ⚠️ ---
-  // 本地环境: 使用 VITE 环境变量
-  try {
-    // 1. 读取 appId
-    appId = import.meta.env.VITE___app_id || 'local-default-app-id'; 
-    
-    // 2. 读取并解析 Firebase 配置 JSON 字符串
-    const configStr = import.meta.env.VITE___firebase_config;
-
-    if (!configStr) {
-      throw new Error("VITE___firebase_config 环境变量缺失。");
+// Function to safely load all data from LocalStorage
+const loadInitialCollections = () => {
+    try {
+        const storedData = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (storedData) {
+            return JSON.parse(storedData);
+        }
+    } catch (error) {
+        console.error("Error loading data from localStorage:", error);
     }
-    
-    firebaseConfig = JSON.parse(configStr);
-    
-    // 3. 本地开发环境不使用 custom token
-    initialAuthToken = null; 
-    
-    // 清除任何初始错误
-    firebaseInitializationError = null; 
-    console.log("使用本地 VITE 环境变量成功配置 Firebase。");
+    // Initial empty structure
+    return {
+        allAppUsers: [],
+        assetFields: [],
+        files: [],
+        assets: [],
+    };
+};
 
-  } catch (e) {
-    console.error("本地 .env 配置解析失败:", e);
-    firebaseInitializationError = "本地开发错误: 无法解析 Firebase 配置 JSON，请检查 VITE___firebase_config 变量格式。详细错误: " + e.message;
-  }
-  // --- ⚠️ END: LOCAL DEV CONFIG HERE ⚠️ ---
-}
+// Custom hook to manage all collections and persistence
+function useLocalStorageCollections() {
+    const [collections, setCollections] = useState(loadInitialCollections());
 
-// 2. 实际初始化 Firebase
-if (!firebaseInitializationError) {
-  try {
-    if (!firebaseConfig.apiKey) {
-      // 如果没有 API Key，抛出更清晰的错误
-      const errorMsg = isCanvasEnvironment 
-          ? "Firebase配置缺失 (Canvas全局变量为空)。"
-          : "Firebase配置缺失 (本地.env配置未设置)。";
-      throw new Error(errorMsg);
-    }
-    const app = initializeApp(firebaseConfig);
-    db = getFirestore(app);
-    auth = getAuth(app);
-    setLogLevel('debug');
-    console.log("Firebase initialized successfully.");
-  } catch (error) {
-    console.error("Firebase Initialization Error:", error);
-    firebaseInitializationError = error.message || "Firebase Initialization failed.";
-  }
-}
+    // Effect to persist changes to LocalStorage whenever collections state updates
+    useEffect(() => {
+        try {
+            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(collections));
+            // console.log("Data persisted to LocalStorage.");
+        } catch (error) {
+            console.error("Error saving data to localStorage:", error);
+        }
+    }, [collections]);
 
-// --- React Hooks ---
-
-// 1. useFirestoreCollection (实时数据)
-function useFirestoreCollection(collectionName) {
-  const [data, setData] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    if (!db || !auth) {
-      setLoading(false);
-      setError("Firestore 未初始化");
-      return;
-    }
-
-    // 确保在 auth 准备好之后再查询
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        // 如果是 public collection，userId 不影响路径，但必须有 auth 才能读取
-        const collectionPath = collectionName.replace('{userId}', user.uid).replace('{appId}', appId);
-        console.log(`[useFirestoreCollection] 正在监听: ${collectionPath}`);
-        
-        const q = query(collection(db, collectionPath));
-        
-        const unsubscribeSnapshot = onSnapshot(q, (snapshot) => {
-          console.log(`[useFirestoreCollection] 收到快照: ${snapshot.docs.length} 条文档`);
-          const newData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-          setData(newData);
-          setLoading(false);
-        }, (err) => {
-          console.error(`[useFirestoreCollection] onSnapshot 错误:`, err);
-          setError(err.message || "加载数据失败");
-          setLoading(false);
+    // Function to update a specific collection
+    const updateCollection = useCallback((collectionName, updater) => {
+        setCollections(prev => {
+            const newCollection = typeof updater === 'function' 
+                ? updater(prev[collectionName] || []) 
+                : updater;
+            
+            return {
+                ...prev,
+                [collectionName]: newCollection
+            };
         });
+    }, []);
 
-        // 返回 snapshot 的 unsubscribe
-        return () => {
-          console.log(`[useFirestoreCollection] 停止监听: ${collectionPath}`);
-          unsubscribeSnapshot();
+    // Helper to get collection data (to mimic the old hook structure)
+    const getCollectionHook = useCallback((collectionName) => {
+        return {
+            data: collections[collectionName] || [],
+            loading: false, // LocalStorage is always fast
+            error: null,
+            // Pass the collection updater function directly
+            update: (updater) => updateCollection(collectionName, updater) 
         };
-      } else {
-        // 如果没有 user，也设置 loading，并清空数据 (防止未授权读取)
-        setData([]);
-        setLoading(false);
-        console.log("[useFirestoreCollection] auth 状态改变: 未登录，等待...");
-      }
-    });
+    }, [collections, updateCollection]);
 
-    // 返回 auth 的 unsubscribe
-    return () => unsubscribeAuth();
-    
-  }, [collectionName]);
-
-  return { data, loading, error };
-}
-
-
-// 2. useModal (模态框 Hook)
-function useModal() {
-  const [isOpen, setIsOpen] = useState(false);
-  const [props, setProps] = useState(null);
-
-  const open = (modalProps = null) => {
-    setProps(modalProps);
-    setIsOpen(true);
-  };
-  
-  const close = () => {
-    setIsOpen(false);
-    setProps(null);
-  };
-
-  return { isOpen, open, close, props };
+    return { getCollectionHook, updateCollection, collections };
 }
 
 // --- App (主组件) ---
 function App() {
-  const [currentUser, setCurrentUser] = useState(null);
-  const [isAuthReady, setIsAuthReady] = useState(false); 
-  const [appUser, setAppUser] = useState(null); 
-  // 使用新的初始化错误状态
-  const [error, setError] = useState(firebaseInitializationError); 
-
-  // 1a. 初始化 Firebase 和身份验证 (强制初始 sign-in)
-  useEffect(() => {
-    if (!auth || !db || error) { // 检查是否有初始化错误
-      setIsAuthReady(true);
-      return;
-    }
-
-    // First, ensure the user is signed in (MANDATORY Canvas logic)
-    const handleInitialSignIn = async () => {
-        try {
-            if (initialAuthToken) {
-                console.log("尝试使用自定义令牌登录...");
-                await signInWithCustomToken(auth, initialAuthToken);
-            } else if (!auth.currentUser) {
-                console.log("尝试匿名登录...");
-                await signInAnonymously(auth);
-            }
-        } catch (e) {
-            console.error("初始身份验证失败:", e);
-            setError(e.message || "初始身份验证失败");
-        }
-    };
-
-    // 监听状态变化
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      console.log("Auth 状态改变:", user ? `用户 ${user.uid}` : "未登录");
-      if (user) {
-        setCurrentUser(user);
-      } else {
-        setCurrentUser(null);
-        setAppUser(null);
-      }
-      setIsAuthReady(true); // 标记 auth 状态已确定
-    });
-
-    handleInitialSignIn(); // Perform sign-in immediately
-
-    return () => unsubscribe();
-  }, [error]); // 依赖 error，如果发生错误则停止
-
-  // 1b. 加载所有用户数据 (用于登录屏幕和权限)
-  const { data: allAppUsers, loading: usersLoading, error: usersError } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/allAppUsers`
-  );
-
-  // 1c. 当 Auth 和 Users 都准备好时，设置 AppUser
-  useEffect(() => {
-    if (isAuthReady && currentUser && !usersLoading && allAppUsers.length > 0) {
-      console.log("正在查找 appUser...", currentUser.uid, allAppUsers);
-      const foundUser = allAppUsers.find(u => u.uid === currentUser.uid);
-      if (foundUser) {
-        setAppUser(foundUser);
-        console.log("AppUser 已设置:", foundUser);
-      } else {
-        // 如果找不到，说明当前登录的 Firebase UID 不在我们的 mock用户列表中
-        console.warn("未在 allAppUsers 中找到当前登录用户! 登出重试。");
-        setAppUser(null);
-      }
-    }
-  }, [isAuthReady, currentUser, usersLoading, allAppUsers]);
+  const { getCollectionHook, updateCollection } = useLocalStorageCollections();
   
-  // 1d. 处理来自 useFirestoreCollection 的数据加载错误
+  // Use a simple boolean flag to indicate initialization is done
+  const [isDataLoaded, setIsDataLoaded] = useState(false); 
+  const [appUser, setAppUser] = useState(null); 
+  const [error, setError] = useState(null); 
+  
+  // Custom hook replacement for Firebase Firestore collection
+  const { data: allAppUsers, loading: usersLoading, update: updateUsers } = getCollectionHook('allAppUsers');
+  
+  // 1. Initial Load and Auth Simulation
   useEffect(() => {
-    if (usersError) {
-      console.error("Firestore (allAppUsers) 加载错误:", usersError);
-      const errorMessage = (typeof usersError === 'string') ? usersError : (usersError.message || "未知数据库错误");
-      setError("无法加载用户数据: " + errorMessage);
+    // 模拟 Auth 状态检查
+    const storedUserId = localStorage.getItem(CURRENT_USER_ID_KEY);
+    
+    if (storedUserId) {
+        // 尝试从加载的用户数据中找到当前登录的用户
+        const foundUser = allAppUsers.find(u => u.id === storedUserId);
+        if (foundUser) {
+            setAppUser(foundUser);
+        } else {
+            // 用户ID存在但用户数据不存在 (可能被删除了)
+            localStorage.removeItem(CURRENT_USER_ID_KEY);
+        }
     }
-  }, [usersError]); 
+    setIsDataLoaded(true);
+  }, [allAppUsers]); // 依赖 allAppUsers 以便在数据更新时重新检查登录状态
+
+  // 模拟登录函数
+  const handleLogin = useCallback((user) => {
+      localStorage.setItem(CURRENT_USER_ID_KEY, user.id);
+      setAppUser(user);
+  }, []);
+
+  // 模拟登出函数
+  const handleLogout = useCallback(() => {
+      localStorage.removeItem(CURRENT_USER_ID_KEY);
+      setAppUser(null);
+  }, []);
+
 
   // 2. 渲染逻辑
-  // 2a. 处理初始化错误
-  if (error) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-100">
-        <div className="p-8 bg-white shadow-lg rounded-lg text-center max-w-md">
-          <AlertTriangle className="w-16 h-16 text-red-500 mx-auto" />
-          <h2 className="mt-4 text-2xl font-bold text-gray-800">系统错误</h2>
-          <p className="mt-2 text-gray-600 font-bold text-red-700 break-all">{error}</p>
-          <p className="mt-4 text-sm text-gray-500">
-            请检查您的 Firebase 配置或网络连接。如果您在本地运行，请查看代码顶部的 <span className='font-bold text-blue-600'>LOCAL DEV CONFIG HERE</span> 区域。
-          </p>
-          <Button variant="primary" onClick={() => window.location.reload()} className="mt-6">
-            刷新页面
-          </Button>
-        </div>
-      </div>
-    );
+  if (!isDataLoaded || usersLoading) {
+    return <LoadingScreen message={'正在加载本地数据...'} />;
   }
+  
+  // 检查是否需要初始化
+  const needsInitialization = allAppUsers.length === 0;
 
-  // 2b. 处理加载状态
-  if (!isAuthReady || usersLoading) {
-    return <LoadingScreen message={!isAuthReady ? '正在连接认证服务...' : '正在加载用户数据...'} />;
-  }
-
-  // 2c. 渲染登录或仪表盘
+  // 渲染登录或仪表盘
   return (
     <div className="min-h-screen bg-gray-50 font-sans">
       {appUser ? (
-        <Dashboard user={appUser} onLogout={() => signOut(auth)} />
+        <Dashboard user={appUser} onLogout={handleLogout} getCollectionHook={getCollectionHook} />
       ) : (
         <LoginScreen 
-          isAuthReady={isAuthReady} 
+          needsInitialization={needsInitialization}
           allAppUsers={allAppUsers} 
-          currentUser={currentUser} // 传入 currentUser 以便在 handleLogin 中使用其 UID
+          onLogin={handleLogin}
+          updateUsers={updateUsers}
+          updateCollection={updateCollection}
         />
       )}
     </div>
@@ -398,102 +244,69 @@ function LoadingScreen({ message }) {
 }
 
 // --- 登录界面 (选择模拟用户) ---
-function LoginScreen({ isAuthReady, allAppUsers, currentUser }) {
+function LoginScreen({ needsInitialization, allAppUsers, onLogin, updateCollection }) {
   const [loading, setLoading] = useState(false); 
   const [error, setError] = useState(null);
   
-  // 检查是否需要初始化
-  // const needsInitialization = isAuthReady && allAppUsers.length === 0;
-  const needsInitialization = false;
-
   // 手动初始化数据
   const handleInitData = async () => {
     setLoading(true);
     setError(null);
     try {
-      if (!db) throw new Error("数据库服务未初始化");
-      console.log("LoginScreen: 手动创建模拟数据...");
-      await createMockData();
-      console.log("LoginScreen: 模拟数据创建成功。");
+        console.log("LoginScreen: 手动创建模拟数据...");
+        const mockCollections = createMockData();
+        
+        // 使用 updateCollection 批量更新所有集合
+        updateCollection('allAppUsers', mockCollections.allAppUsers);
+        updateCollection('assetFields', mockCollections.assetFields);
+        updateCollection('files', mockCollections.files);
+        updateCollection('assets', mockCollections.assets);
+
+        console.log("LoginScreen: 模拟数据创建成功。");
     } catch (err) {
-      console.error("LoginScreen: 创建模拟数据失败:", err);
-      setError(err.message || "创建模拟数据失败");
+        console.error("LoginScreen: 创建模拟数据失败:", err);
+        setError(err.message || "创建模拟数据失败");
     } finally {
-      setLoading(false);
+        setLoading(false);
     }
   };
 
-  // 模拟登录
-  const handleLogin = async (user) => {
-    setLoading(true);
-    setError(null);
-    try {
-      if (!db || !auth) throw new Error("数据库或认证服务不可用");
-      if (!currentUser) {
-         console.error("当前未登录 Firebase Auth。正在尝试重新登录...");
-         // 强制重新匿名登录，以获得一个有效的 currentUser.uid
-         await signInAnonymously(auth);
-         // 延迟执行下一个步骤，等待 onAuthStateChanged 更新 currentUser
-         setLoading(false);
-         return; 
-      }
-      
-      const authUid = currentUser.uid;
-      
-      console.log(`正在更新用户 ${user.name} 的 uid 为 ${authUid}...`);
-      
-      // 更新 Firestore 中该用户的 uid (关键步骤: 绑定 mock user 和 Firebase Auth user)
-      const userDocRef = doc(db, `artifacts/${appId}/public/data/allAppUsers`, user.id);
-      await setDoc(userDocRef, { uid: authUid }, { merge: true });
-      
-      // 成功后，App 组件的 onSnapshot 会自动检测到 uid 变化并设置 appUser
-      
-    } catch (err) {
-      console.error("登录失败:", err);
-      setError(err.message || "登录时发生错误");
-      setLoading(false);
-    }
-  };
-  
   // 渲染
   if (loading) {
     return <LoadingScreen message="正在操作..." />;
   }
   
   if (error) {
-      return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-4">
-        <div className="p-8 bg-white shadow-lg rounded-lg text-center max-w-md">
-          <AlertTriangle className="w-16 h-16 text-red-500 mx-auto" />
-          <h2 className="mt-4 text-2xl font-bold text-gray-800">操作失败</h2>
-          <p className="mt-2 text-gray-600 break-all">{error}</p>
-          <p className="mt-4 text-sm text-gray-500">
-            请检查您的 Firebase 数据库安全规则 (是否为测试模式?)。
-          </p>
-           <Button variant="primary" onClick={() => window.location.reload()} className="mt-6">
-             刷新页面
-           </Button>
-        </div>
-      </div>
-    );
+       return (
+       <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-4">
+         <div className="p-8 bg-white shadow-lg rounded-lg text-center max-w-md">
+           <AlertTriangle className="w-16 h-16 text-red-500 mx-auto" />
+           <h2 className="mt-4 text-2xl font-bold text-gray-800">操作失败</h2>
+           <p className="mt-2 text-gray-600 break-all">{error}</p>
+            <Button variant="primary" onClick={() => window.location.reload()} className="mt-6">
+              刷新页面
+            </Button>
+         </div>
+       </div>
+     );
   }
 
   // 如果需要初始化, 显示初始化按钮
   if (needsInitialization) {
     return (
-       <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-4">
-        <div className="p-8 bg-white shadow-lg rounded-lg text-center max-w-md">
-          <Database className="w-16 h-16 text-blue-500 mx-auto" />
-          <h2 className="mt-4 text-2xl font-bold text-gray-800">欢迎使用</h2>
-          <p className="mt-2 text-gray-600">
-            系统检测到数据库为空。请先初始化模拟数据。
-          </p>
-           <Button variant="primary" onClick={handleInitData} className="mt-6 w-full justify-center text-lg py-3">
-             <RefreshCw className="w-5 h-5 mr-2" />
-             初始化模拟数据
-           </Button>
-        </div>
-      </div>
+        <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-4">
+         <div className="p-8 bg-white shadow-lg rounded-lg text-center max-w-md">
+           <Database className="w-16 h-16 text-blue-500 mx-auto" />
+           <h2 className="mt-4 text-2xl font-bold text-gray-800">欢迎使用</h2>
+           <p className="mt-2 text-gray-600">
+             系统检测到本地存储为空。请先初始化模拟数据。
+           </p>
+            <Button variant="primary" onClick={handleInitData} className="mt-6 w-full justify-center text-lg py-3">
+              <RefreshCw className="w-5 h-5 mr-2" />
+              初始化模拟数据
+            </Button>
+         </div>
+       </div>
     );
   }
 
@@ -513,7 +326,7 @@ function LoginScreen({ isAuthReady, allAppUsers, currentUser }) {
                 user.role === 'superadmin' ? 'danger' :
                 user.role === 'admin' ? 'primary' : 'outline'
               }
-              onClick={() => handleLogin(user)}
+              onClick={() => onLogin(user)}
               className="w-full justify-center py-3 text-lg"
             >
               {user.role === 'superadmin' ? '👑' : user.role === 'admin' ? '👨‍💼' : '🧑‍💻'}
@@ -526,163 +339,150 @@ function LoginScreen({ isAuthReady, allAppUsers, currentUser }) {
   );
 }
 
-// --- 模拟数据创建 ---
-async function createMockData() {
-  if (!db) throw new Error("Firestore 实例 (db) 未定义");
+// --- 模拟数据创建 (返回一个包含所有集合的 JSON 对象) ---
+function createMockData() {
+    const now = Date.now();
+    const mockCollections = {
+        allAppUsers: [],
+        assetFields: [],
+        files: [],
+        assets: [],
+    };
+    
+    // Helper to add data to a collection and return the ID
+    const addMockDoc = (collectionName, data) => {
+        const id = generateId();
+        const doc = { id, ...data };
+        mockCollections[collectionName].push(doc);
+        return id;
+    };
+    
+    // 1. 创建模拟用户
+    const superAdminId = addMockDoc('allAppUsers', { name: "超级管理员", role: "superadmin" });
+    const adminId = addMockDoc('allAppUsers', { name: "管理员 (张三)", role: "admin" });
+    const subAccountId1 = addMockDoc('allAppUsers', { name: "子账号一号 (李四)", role: "subaccount" });
+    const subAccountId2 = addMockDoc('allAppUsers', { name: "子账号二号 (王五)", role: "subaccount" });
+    const subAccountId3 = addMockDoc('allAppUsers', { name: "子账号三号", role: "subaccount" });
+    const subAccountId4 = addMockDoc('allAppUsers', { name: "子账号四号", role: "subaccount" });
+    const subAccountId5 = addMockDoc('allAppUsers', { name: "子账号五号", role: "subaccount" });
+    
+    console.log("模拟用户已添加");
+    
+    // 2. 创建模拟资产字段
+    const fieldsData = [
+        { name: "鱼苗品种", type: "text", active: true, history: [{ status: "created", timestamp: now }] },
+        { name: "数量 (尾)", type: "number", active: true, history: [{ status: "created", timestamp: now }] },
+        { name: "投放日期", type: "date", active: true, history: [{ status: "created", timestamp: now }] },
+        { name: "鱼塘编号", type: "text", active: true, history: [{ status: "created", timestamp: now }] },
+        { name: "备注", type: "textarea", active: true, history: [{ status: "created", timestamp: now }] },
+        { name: "资产名称", type: "text", active: false, history: [{ status: "created", timestamp: now }, { status: "deleted", timestamp: now }] }, // 模拟旧字段
+    ];
+    
+    const fieldDocsMap = {}; // 存储字段 id 用于资产
+    fieldsData.forEach((field) => {
+        const id = addMockDoc('assetFields', field);
+        fieldDocsMap[field.name] = id;
+    });
+    console.log("模拟字段已添加");
 
-  const batch = writeBatch(db);
-  const now = Timestamp.now();
-  
-  const appIdPath = `artifacts/${appId}/public/data`;
+    // 3. 创建模拟文件
+    addMockDoc('files', {
+        fileName: "鱼苗养殖标准手册.pdf",
+        url: "https://example.com/manual.pdf",
+        uploadedBy: adminId,
+        uploadedAt: now,
+        allowedSubAccounts: [subAccountId1, subAccountId2, subAccountId3]
+    });
+    
+    addMockDoc('files', {
+        fileName: "水质检测报告-2024-Q4.docx",
+        url: "https://example.com/report.docx",
+        uploadedBy: adminId,
+        uploadedAt: now,
+        allowedSubAccounts: [subAccountId1, subAccountId4]
+    });
+    console.log("模拟文件已添加");
 
-  // 1. 创建模拟用户
-  const usersCol = collection(db, `${appIdPath}/allAppUsers`);
-  // (uid 将在首次登录时被覆盖, 初始值设置为空字符串)
-  const superAdminId = doc(usersCol).id;
-  batch.set(doc(usersCol, superAdminId), { uid: "", name: "超级管理员", role: "superadmin", id: superAdminId });
-  
-  const adminId = doc(usersCol).id;
-  batch.set(doc(usersCol, adminId), { uid: "", name: "管理员 (张三)", role: "admin", id: adminId });
-  
-  const subAccountId1 = doc(usersCol).id;
-  batch.set(doc(usersCol, subAccountId1), { uid: "", name: "子账号一号 (李四)", role: "subaccount", id: subAccountId1 });
-  
-  const subAccountId2 = doc(usersCol).id;
-  batch.set(doc(usersCol, subAccountId2), { uid: "", name: "子账号二号 (王五)", role: "subaccount", id: subAccountId2 });
-  
-  const subAccountId3 = doc(usersCol).id;
-  batch.set(doc(usersCol, subAccountId3), { uid: "", name: "子账号三号", role: "subaccount", id: subAccountId3 });
-  
-  const subAccountId4 = doc(usersCol).id;
-  batch.set(doc(usersCol, subAccountId4), { uid: "", name: "子账号四号", role: "subaccount", id: subAccountId4 });
-  
-  const subAccountId5 = doc(usersCol).id;
-  batch.set(doc(usersCol, subAccountId5), { uid: "", name: "子账号五号", role: "subaccount", id: subAccountId5 });
-  
-  console.log("模拟用户已添加");
-  
-  // 2. 创建模拟资产字段
-  const fieldsCol = collection(db, `${appIdPath}/assetFields`);
-  const fieldsData = [
-    { name: "鱼苗品种", type: "text", active: true, history: [{ status: "created", timestamp: now }] },
-    { name: "数量 (尾)", type: "number", active: true, history: [{ status: "created", timestamp: now }] },
-    { name: "投放日期", type: "date", active: true, history: [{ status: "created", timestamp: now }] },
-    { name: "鱼塘编号", type: "text", active: true, history: [{ status: "created", timestamp: now }] },
-    { name: "备注", type: "textarea", active: true, history: [{ status: "created", timestamp: now }] },
-    { name: "资产名称", type: "text", active: false, history: [{ status: "created", timestamp: now }, { status: "deleted", timestamp: now }] }, // 模拟旧字段
-  ];
-  
-  const fieldDocs = {}; // 存储字段 id 用于资产
-  fieldsData.forEach((field) => {
-      const fieldDocRef = doc(fieldsCol);
-      batch.set(fieldDocRef, field);
-      fieldDocs[field.name] = fieldDocRef.id;
-  });
-  console.log("模拟字段已添加");
+    // 4. 创建模拟资产 (批量)
+    const getFieldsSnapshot = () => fieldsData.map(f => ({ 
+        id: fieldDocsMap[f.name], 
+        name: f.name, 
+        active: f.active 
+    }));
 
-  // 3. 创建模拟文件
-  const filesCol = collection(db, `${appIdPath}/files`);
-  const file1Ref = doc(filesCol);
-  batch.set(file1Ref, {
-    fileName: "鱼苗养殖标准手册.pdf",
-    url: "https://example.com/manual.pdf",
-    uploadedBy: adminId,
-    uploadedAt: now,
-    allowedSubAccounts: [subAccountId1, subAccountId2, subAccountId3] // 允许前三个子账号
-  });
-  
-  const file2Ref = doc(filesCol);
-  batch.set(file2Ref, {
-    fileName: "水质检测报告-2024-Q4.docx",
-    url: "https://example.com/report.docx",
-    uploadedBy: adminId,
-    uploadedAt: now,
-    allowedSubAccounts: [subAccountId1, subAccountId4] // 只允许 1 和 4
-  });
-  console.log("模拟文件已添加");
-
-  // 4. 创建模拟资产 (批量)
-  const assetsCol = collection(db, `${appIdPath}/assets`);
-  
-  // 子账号一号的批量资产 (2条)
-  batch.set(doc(assetsCol), {
-    subAccountId: subAccountId1,
-    subAccountName: "子账号一号 (李四)",
-    submittedAt: now,
-    // 存储该批次提交时 *所有* 字段的快照
-    fieldsSnapshot: fieldsData.map(f => ({ id: fieldDocs[f.name], name: f.name, active: f.active })),
-    // 存储批量数据
-    batchData: [
-      {
-        [fieldDocs["鱼苗品种"]]: "鲈鱼苗",
-        [fieldDocs["数量 (尾)"]]: 5000,
-        [fieldDocs["投放日期"]]: "2024-10-01",
-        [fieldDocs["鱼塘编号"]]: "A-01",
-        [fieldDocs["备注"]]: "第一批",
-      },
-      {
-        [fieldDocs["鱼苗品种"]]: "鲤鱼苗",
-        [fieldDocs["数量 (尾)"]]: 10000,
-        [fieldDocs["投放日期"]]: "2024-10-03",
-        [fieldDocs["鱼塘编号"]]: "B-02",
-        [fieldDocs["备注"]]: "长势良好",
-      }
-    ]
-  });
-  
-  // 子账号二号的批量资产 (1条)
-  batch.set(doc(assetsCol), {
-    subAccountId: subAccountId2,
-    subAccountName: "子账号二号 (王五)",
-    submittedAt: now,
-    fieldsSnapshot: fieldsData.map(f => ({ id: fieldDocs[f.name], name: f.name, active: f.active })),
-    batchData: [
-      {
-        [fieldDocs["鱼苗品种"]]: "草鱼苗",
-        [fieldDocs["数量 (尾)"]]: 8000,
-        [fieldDocs["投放日期"]]: "2024-10-05",
-        [fieldDocs["鱼塘编号"]]: "C-01",
-        [fieldDocs["备注"]]: "",
-      }
-    ]
-  });
-  
-  // 子账号一号的 *旧* 资产 (模拟字段变更前)
-  const oldFieldsData = fieldsData.filter(f => f.name === "资产名称" || f.name === "备注");
-  const oldFieldDocs = {};
-  oldFieldsData.forEach(f => { oldFieldDocs[f.name] = fieldDocs[f.name]; });
-  
-  batch.set(doc(assetsCol), {
-    subAccountId: subAccountId1,
-    subAccountName: "子账号一号 (李四)",
-    submittedAt: Timestamp.fromMillis(now.toMillis() - 86400000 * 30), // 30天前
-    fieldsSnapshot: oldFieldsData.map(f => ({ id: oldFieldDocs[f.name], name: f.name, active: f.active })),
-    batchData: [
-      {
-        [oldFieldDocs["资产名称"]]: "旧的测试资产",
-        [oldFieldDocs["备注"]]: "这是一条旧数据",
-      }
-    ]
-  });
-  
-  console.log("模拟资产已添加");
-
-  // 提交所有批量操作
-  await batch.commit();
-  console.log("模拟数据创建成功！");
+    // 子账号一号的批量资产 (2条)
+    addMockDoc('assets', {
+        subAccountId: subAccountId1,
+        subAccountName: "子账号一号 (李四)",
+        submittedAt: now,
+        fieldsSnapshot: getFieldsSnapshot(),
+        batchData: [
+            {
+                [fieldDocsMap["鱼苗品种"]]: "鲈鱼苗",
+                [fieldDocsMap["数量 (尾)"]]: 5000,
+                [fieldDocsMap["投放日期"]]: "2024-10-01",
+                [fieldDocsMap["鱼塘编号"]]: "A-01",
+                [fieldDocsMap["备注"]]: "第一批",
+            },
+            {
+                [fieldDocsMap["鱼苗品种"]]: "鲤鱼苗",
+                [fieldDocsMap["数量 (尾)"]]: 10000,
+                [fieldDocsMap["投放日期"]]: "2024-10-03",
+                [fieldDocsMap["鱼塘编号"]]: "B-02",
+                [fieldDocsMap["备注"]]: "长势良好",
+            }
+        ]
+    });
+    
+    // 子账号二号的批量资产 (1条)
+    addMockDoc('assets', {
+        subAccountId: subAccountId2,
+        subAccountName: "子账号二号 (王五)",
+        submittedAt: now,
+        fieldsSnapshot: getFieldsSnapshot(),
+        batchData: [
+            {
+                [fieldDocsMap["鱼苗品种"]]: "草鱼苗",
+                [fieldDocsMap["数量 (尾)"]]: 8000,
+                [fieldDocsMap["投放日期"]]: "2024-10-05",
+                [fieldDocsMap["鱼塘编号"]]: "C-01",
+                [fieldDocsMap["备注"]]: "",
+            }
+        ]
+    });
+    
+    // 子账号一号的 *旧* 资产 (模拟字段变更前)
+    const oldFieldsData = fieldsData.filter(f => f.name === "资产名称" || f.name === "备注");
+    
+    addMockDoc('assets', {
+        subAccountId: subAccountId1,
+        subAccountName: "子账号一号 (李四)",
+        submittedAt: now - 86400000 * 30, // 30天前
+        fieldsSnapshot: oldFieldsData.map(f => ({ id: fieldDocsMap[f.name], name: f.name, active: f.active })),
+        batchData: [
+            {
+                [fieldDocsMap["资产名称"]]: "旧的测试资产",
+                [fieldDocsMap["备注"]]: "这是一条旧数据",
+            }
+        ]
+    });
+    
+    console.log("模拟资产已添加");
+    
+    return mockCollections;
 }
 
 
 // --- 仪表盘 (主布局) ---
-function Dashboard({ user, onLogout }) {
+function Dashboard({ user, onLogout, getCollectionHook }) {
   const renderPanel = () => {
     switch (user.role) {
       case 'subaccount':
-        return <SubAccountPanel user={user} />;
+        return <SubAccountPanel user={user} getCollectionHook={getCollectionHook} />;
       case 'admin':
-        return <AdminPanel user={user} />;
+        return <AdminPanel user={user} getCollectionHook={getCollectionHook} />;
       case 'superadmin':
-        return <SuperAdminPanel user={user} />;
+        return <SuperAdminPanel user={user} getCollectionHook={getCollectionHook} />;
       default:
         return <div className="p-4">未知的用户角色</div>;
     }
@@ -729,7 +529,7 @@ function Dashboard({ user, onLogout }) {
 }
 
 // --- 1. 子账号面板 ---
-function SubAccountPanel({ user }) {
+function SubAccountPanel({ user, getCollectionHook }) {
   const tabs = [
     { id: 'myAssets', label: '我的资产', icon: Box },
     { id: 'registerAsset', label: '登记新资产', icon: Plus },
@@ -741,25 +541,23 @@ function SubAccountPanel({ user }) {
     <div>
       <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
       <div className="mt-6">
-        {activeTab === 'myAssets' && <ViewMyAssetsPanel user={user} />}
-        {activeTab === 'registerAsset' && <RegisterAssetsPanel user={user} onAssetRegistered={() => setActiveTab('myAssets')} />}
-        {activeTab === 'viewFiles' && <ViewFilesPanel user={user} />}
+        {activeTab === 'myAssets' && <ViewMyAssetsPanel user={user} getCollectionHook={getCollectionHook} />}
+        {activeTab === 'registerAsset' && <RegisterAssetsPanel user={user} getCollectionHook={getCollectionHook} onAssetRegistered={() => setActiveTab('myAssets')} />}
+        {activeTab === 'viewFiles' && <ViewFilesPanel user={user} getCollectionHook={getCollectionHook} />}
       </div>
     </div>
   );
 }
 
 // 1a. 查看我的资产
-function ViewMyAssetsPanel({ user }) {
-  const { data: assets, loading, error } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/assets`
-  );
+function ViewMyAssetsPanel({ user, getCollectionHook }) {
+  const { data: assets, loading, error } = getCollectionHook('assets');
   
   // 仅显示当前用户的资产
   const myAssets = useMemo(() => {
     return assets
       .filter(asset => asset.subAccountId === user.id)
-      .sort((a, b) => b.submittedAt.toMillis() - a.submittedAt.toMillis()); // 按提交时间倒序
+      .sort((a, b) => b.submittedAt - a.submittedAt); // 按提交时间倒序 (数字比较)
   }, [assets, user.id]);
 
   const viewModal = useModal();
@@ -801,7 +599,8 @@ function ViewMyAssetsPanel({ user }) {
 
 // 资产卡片
 function AssetCard({ asset, onClick }) {
-    const submittedDate = asset.submittedAt?.toDate ? asset.submittedAt.toDate().toLocaleDateString() : 'N/A';
+    // 转换时间戳 (number) 到日期字符串
+    const submittedDate = new Date(asset.submittedAt).toLocaleDateString() || 'N/A';
     const recordCount = asset.batchData?.length || 0;
     
     // 尝试从批量数据的第一条中获取一个“标题”
@@ -839,7 +638,8 @@ function AssetCard({ asset, onClick }) {
 function ViewAssetDetailModal({ asset, isOpen, onClose }) {
   if (!asset) return null;
 
-  const submittedDate = asset.submittedAt?.toDate ? asset.submittedAt.toDate().toLocaleString() : 'N/A';
+  // 转换时间戳 (number) 到日期字符串
+  const submittedDate = new Date(asset.submittedAt).toLocaleString() || 'N/A';
   
   // 创建一个 字段ID -> 字段名称 的映射
   const fieldIdToName = useMemo(() => {
@@ -909,15 +709,13 @@ function ViewAssetDetailModal({ asset, isOpen, onClose }) {
 
 
 // 1b. 登记新资产
-function RegisterAssetsPanel({ user, onAssetRegistered }) {
+function RegisterAssetsPanel({ user, getCollectionHook, onAssetRegistered }) {
+  const { data: allFields, loading: fieldsLoading, error: fieldsError, update: updateFields } = getCollectionHook('assetFields');
+  const { data: assets, update: updateAssets } = getCollectionHook('assets');
+
   const [rows, setRows] = useState([{}]); // 初始化一行空数据
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
-
-  // 加载当前可用的资产字段
-  const { data: allFields, loading: fieldsLoading, error: fieldsError } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/assetFields`
-  );
 
   // 仅获取 active: true 的字段
   const activeFields = useMemo(() => {
@@ -970,7 +768,7 @@ function RegisterAssetsPanel({ user, onAssetRegistered }) {
   }
 
   // 提交
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
     setIsSubmitting(true);
     setError(null);
@@ -985,32 +783,30 @@ function RegisterAssetsPanel({ user, onAssetRegistered }) {
       setIsSubmitting(false);
       return;
     }
-
+    
     try {
-      if (!db) throw new Error("数据库未初始化");
-      
-      const assetsCol = collection(db, `artifacts/${appId}/public/data/assets`);
-      
-      // 创建一个当前所有字段的快照
-      const fieldsSnapshot = allFields.map(f => ({
-        id: f.id,
-        name: f.name,
-        active: f.active
-      }));
-      
-      await addDoc(assetsCol, {
-        subAccountId: user.id,
-        subAccountName: user.name,
-        submittedAt: Timestamp.now(),
-        fieldsSnapshot: fieldsSnapshot,
-        batchData: nonEmptyRows
-      });
+        const newAssetBatch = {
+            id: generateId(),
+            subAccountId: user.id,
+            subAccountName: user.name,
+            submittedAt: Date.now(), // Use JavaScript timestamp (number)
+            // 创建一个当前所有字段的快照
+            fieldsSnapshot: allFields.map(f => ({
+                id: f.id,
+                name: f.name,
+                active: f.active
+            })),
+            batchData: nonEmptyRows
+        };
 
-      // 成功
-      console.log("批量资产提交成功！");
-      resetForm();
-      onAssetRegistered(); // 通知父组件切换 Tab
+        // 更新 assets 集合
+        updateAssets(prevAssets => [...prevAssets, newAssetBatch]);
 
+        // 成功
+        console.log("批量资产提交成功！");
+        resetForm();
+        onAssetRegistered(); // 通知父组件切换 Tab
+        
     } catch (err) {
       console.error("提交资产失败:", err);
       setError(err.message || "提交失败，请重试。");
@@ -1027,10 +823,6 @@ function RegisterAssetsPanel({ user, onAssetRegistered }) {
       return <div className="text-red-500">加载资产字段失败: {fieldsError || "未找到可用字段"}</div>;
   }
   
-  if (activeFields.length === 0) {
-      return <LoadingScreen message="正在加载资产字段..." />; // 仍在等待 activeFields
-  }
-
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <h2 className="text-2xl font-semibold text-gray-800 mb-4">登记新资产 (批量)</h2>
@@ -1115,10 +907,8 @@ function RegisterAssetsPanel({ user, onAssetRegistered }) {
 
 
 // 1c. 查看文件
-function ViewFilesPanel({ user }) {
-  const { data: files, loading, error } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/files`
-  );
+function ViewFilesPanel({ user, getCollectionHook }) {
+  const { data: files, loading, error } = getCollectionHook('files');
 
   // 仅显示允许当前用户查看的文件
   const myFiles = useMemo(() => {
@@ -1148,7 +938,7 @@ function ViewFilesPanel({ user }) {
                 <div>
                   <span className="font-medium text-gray-800">{file.fileName}</span>
                   <span className="text-sm text-gray-400 block">
-                    上传于: {file.uploadedAt?.toDate ? file.uploadedAt.toDate().toLocaleDateString() : 'N/A'}
+                    上传于: {new Date(file.uploadedAt).toLocaleDateString() || 'N/A'}
                   </span>
                 </div>
               </div>
@@ -1169,7 +959,7 @@ function ViewFilesPanel({ user }) {
 }
 
 // --- 2. 管理员面板 ---
-function AdminPanel({ user }) {
+function AdminPanel({ user, getCollectionHook }) {
   const tabs = [
     { id: 'viewAssets', label: '汇总查看资产', icon: Users },
     { id: 'uploadFile', label: '管理文件', icon: UploadCloud },
@@ -1180,22 +970,17 @@ function AdminPanel({ user }) {
     <div>
       <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
       <div className="mt-6">
-        {activeTab === 'viewAssets' && <ViewAllAssetsPanel user={user} />}
-        {activeTab === 'uploadFile' && <ManageFilesPanel user={user} />}
+        {activeTab === 'viewAssets' && <ViewAllAssetsPanel user={user} getCollectionHook={getCollectionHook} />}
+        {activeTab === 'uploadFile' && <ManageFilesPanel user={user} getCollectionHook={getCollectionHook} />}
       </div>
     </div>
   );
 }
 
 // 2a. 汇总查看资产
-function ViewAllAssetsPanel({ user }) {
-  const { data: assets, loading: assetsLoading, error: assetsError } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/assets`
-  );
-  
-  const { data: allAppUsers, loading: usersLoading, error: usersError } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/allAppUsers`
-  );
+function ViewAllAssetsPanel({ user, getCollectionHook }) {
+  const { data: assets, loading: assetsLoading, error: assetsError } = getCollectionHook('assets');
+  const { data: allAppUsers, loading: usersLoading, error: usersError } = getCollectionHook('allAppUsers');
   
   const [selectedSubAccountId, setSelectedSubAccountId] = useState('all');
 
@@ -1206,7 +991,7 @@ function ViewAllAssetsPanel({ user }) {
   const filteredAssets = useMemo(() => {
     return assets
       .filter(asset => selectedSubAccountId === 'all' || asset.subAccountId === selectedSubAccountId)
-      .sort((a, b) => b.submittedAt.toMillis() - a.submittedAt.toMillis()); // 按提交时间倒序
+      .sort((a, b) => b.submittedAt - a.submittedAt); // 按提交时间倒序
   }, [assets, selectedSubAccountId]);
 
   const viewModal = useModal();
@@ -1271,13 +1056,9 @@ function ViewAllAssetsPanel({ user }) {
 
 
 // 2b. 管理文件
-function ManageFilesPanel({ user }) {
-  const { data: files, loading: filesLoading, error: filesError } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/files`
-  );
-  const { data: allAppUsers, loading: usersLoading, error: usersError } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/allAppUsers`
-  );
+function ManageFilesPanel({ user, getCollectionHook }) {
+  const { data: files, loading: filesLoading, error: filesError, update: updateFiles } = getCollectionHook('files');
+  const { data: allAppUsers, loading: usersLoading, error: usersError } = getCollectionHook('allAppUsers');
   
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
@@ -1308,7 +1089,7 @@ function ManageFilesPanel({ user }) {
   };
   
   // 处理上传
-  const handleUpload = async (e) => {
+  const handleUpload = (e) => {
       e.preventDefault();
       if (!fileName || !fileUrl) {
         setUploadError("文件名和文件 URL 均不能为空。");
@@ -1320,18 +1101,17 @@ function ManageFilesPanel({ user }) {
       setUploadError(null);
       
       try {
-        if (!db) throw new Error("数据库未初始化");
+        const newFile = {
+            id: generateId(),
+            fileName: fileName,
+            url: fileUrl,
+            uploadedBy: user.id,
+            uploadedAt: Date.now(),
+            allowedSubAccounts: selectedAccounts
+        };
         
-        // 真实应用中, 这里会是 getStorage, uploadBytes, getDownloadURL
-        
-        const filesCol = collection(db, `artifacts/${appId}/public/data/files`);
-        await addDoc(filesCol, {
-          fileName: fileName,
-          url: fileUrl,
-          uploadedBy: user.id,
-          uploadedAt: Timestamp.now(),
-          allowedSubAccounts: selectedAccounts
-        });
+        // 更新 files 集合
+        updateFiles(prevFiles => [...prevFiles, newFile]);
         
         // 重置表单
         setFileName('');
@@ -1347,16 +1127,9 @@ function ManageFilesPanel({ user }) {
   };
   
   // 处理删除
-  const handleDelete = async (fileId) => {
-    if (!db) return;
-    
-    try {
-      const fileDocRef = doc(db, `artifacts/${appId}/public/data/files`, fileId);
-      await deleteDoc(fileDocRef);
-    } catch (err) {
-      console.error("删除文件失败:", err);
-      // (可以添加一个 UI 错误提示)
-    }
+  const handleDelete = (fileId) => {
+    // 更新 files 集合，移除该文件
+    updateFiles(prevFiles => prevFiles.filter(file => file.id !== fileId));
   };
 
   if (usersLoading || filesLoading) {
@@ -1499,7 +1272,7 @@ function ManageFilesPanel({ user }) {
 
 
 // --- 3. 超级管理员面板 ---
-function SuperAdminPanel({ user }) {
+function SuperAdminPanel({ user, getCollectionHook }) {
   const tabs = [
     { id: 'manageFields', label: '管理资产字段', icon: Settings },
     { id: 'manageUsers', label: '管理所有用户', icon: Users },
@@ -1510,18 +1283,16 @@ function SuperAdminPanel({ user }) {
     <div>
       <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
       <div className="mt-6">
-        {activeTab === 'manageFields' && <ManageAssetFieldsPanel user={user} />}
-        {activeTab === 'manageUsers' && <ManageUsersPanel user={user} />}
+        {activeTab === 'manageFields' && <ManageAssetFieldsPanel user={user} getCollectionHook={getCollectionHook} />}
+        {activeTab === 'manageUsers' && <ManageUsersPanel user={user} getCollectionHook={getCollectionHook} />}
       </div>
     </div>
   );
 }
 
 // 3a. 管理资产字段
-function ManageAssetFieldsPanel({ user }) {
-  const { data: allFields, loading, error } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/assetFields`
-  );
+function ManageAssetFieldsPanel({ user, getCollectionHook }) {
+  const { data: allFields, loading, error, update: updateFields } = getCollectionHook('assetFields');
   
   const [newFieldName, setNewFieldName] = useState('');
   const [newFieldType, setNewFieldType] = useState('text');
@@ -1531,7 +1302,7 @@ function ManageAssetFieldsPanel({ user }) {
   // 用于确认删除
   const confirmModal = useModal();
   
-  const handleAddField = async (e) => {
+  const handleAddField = (e) => {
     e.preventDefault();
     if (!newFieldName.trim()) {
       setActionError("字段名称不能为空");
@@ -1542,19 +1313,20 @@ function ManageAssetFieldsPanel({ user }) {
     setActionError(null);
     
     try {
-      if (!db) throw new Error("数据库未初始化");
-      const fieldsCol = collection(db, `artifacts/${appId}/public/data/assetFields`);
-      
-      await addDoc(fieldsCol, {
-        name: newFieldName.trim(),
-        type: newFieldType,
-        active: true,
-        history: [{ status: "created", timestamp: Timestamp.now() }]
-      });
-      
-      setNewFieldName('');
-      setNewFieldType('text');
-      
+        const newField = {
+            id: generateId(),
+            name: newFieldName.trim(),
+            type: newFieldType,
+            active: true,
+            history: [{ status: "created", timestamp: Date.now() }]
+        };
+        
+        // 更新 fields 集合
+        updateFields(prevFields => [...prevFields, newField]);
+        
+        setNewFieldName('');
+        setNewFieldType('text');
+        
     } catch (err) {
       console.error("添加字段失败:", err);
       setActionError(err.message || "添加失败");
@@ -1564,21 +1336,22 @@ function ManageAssetFieldsPanel({ user }) {
   };
   
   // 切换字段状态 (激活/归档)
-  const toggleFieldStatus = async (field) => {
-    if (!db) return;
+  const toggleFieldStatus = (field) => {
     
     const newStatus = !field.active;
     const historyEntry = {
       status: newStatus ? "activated" : "archived",
-      timestamp: Timestamp.now()
+      timestamp: Date.now()
     };
     
     try {
-      const fieldDocRef = doc(db, `artifacts/${appId}/public/data/assetFields`, field.id);
-      await updateDoc(fieldDocRef, {
-        active: newStatus,
-        history: [...(field.history || []), historyEntry]
-      });
+        // 更新 fields 集合，通过映射更新特定字段
+        updateFields(prevFields => prevFields.map(f => 
+            f.id === field.id
+            ? { ...f, active: newStatus, history: [...(f.history || []), historyEntry] }
+            : f
+        ));
+
     } catch (err) {
       console.error("更新字段状态失败:", err);
       setActionError(err.message || "更新失败");
@@ -1595,10 +1368,10 @@ function ManageAssetFieldsPanel({ user }) {
   };
   
   // 执行删除 (在 v1 中, 我们使用归档代替真删除)
-  const handleDeleteField = async (field) => {
+  const handleDeleteField = (field) => {
       // 这是一个归档操作
       if (field.active) {
-        await toggleFieldStatus(field);
+        toggleFieldStatus(field);
       }
       confirmModal.close();
   };
@@ -1704,6 +1477,16 @@ function ManageAssetFieldsPanel({ user }) {
                     >
                       {field.active ? "归档" : "重新激活"}
                     </Button>
+                    {/* 我们用 "归档" 代替 "删除" */}
+                    {/* { field.active && (
+                      <Button
+                        variant="danger"
+                        onClick={() => openDeleteConfirm(field)}
+                        size="sm"
+                      >
+                        归档
+                      </Button>
+                    )} */}
                   </td>
                 </tr>
               ))}
@@ -1732,10 +1515,8 @@ function ManageAssetFieldsPanel({ user }) {
 
 
 // 3b. 管理所有用户
-function ManageUsersPanel({ user }) {
-  const { data: allAppUsers, loading, error } = useFirestoreCollection(
-    `artifacts/${appId}/public/data/allAppUsers`
-  );
+function ManageUsersPanel({ user, getCollectionHook }) {
+  const { data: allAppUsers, loading, error } = getCollectionHook('allAppUsers');
   
   if (loading) {
     return <LoadingScreen message="正在加载所有用户..." />;
@@ -1757,7 +1538,6 @@ function ManageUsersPanel({ user }) {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">用户名</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">角色</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">用户 ID (id)</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Auth UID (uid)</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
@@ -1766,7 +1546,6 @@ function ManageUsersPanel({ user }) {
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{u.name}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{u.role}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">{u.id}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">{u.uid}</td>
               </tr>
             ))}
           </tbody>
@@ -1874,7 +1653,7 @@ function Loader({ className = 'w-5 h-5 text-white' }) {
   return (
     <svg 
       className={`animate-spin ${className}`} 
-      xmlns="http://www.w3.org/2000/svg" 
+      xmlns="http://www.w3.org="http://www.w3.org/2000/svg" 
       fill="none" 
       viewBox="0 0 24 24"
     >
@@ -1893,6 +1672,24 @@ function Loader({ className = 'w-5 h-5 text-white' }) {
       ></path>
     </svg>
   );
+}
+
+// 5. useModal
+function useModal() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [props, setProps] = useState(null);
+
+  const open = (modalProps = null) => {
+    setProps(modalProps);
+    setIsOpen(true);
+  };
+  
+  const close = () => {
+    setIsOpen(false);
+    setProps(null);
+  };
+
+  return { isOpen, open, close, props };
 }
 
 export default App;
