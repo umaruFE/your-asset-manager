@@ -1,8 +1,8 @@
 /** @type {import('tailwindcss').Config} */
-export default {
+module.exports = {
   content: [
     "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}", // 确保这行存在
+    "./src/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
     extend: {},
