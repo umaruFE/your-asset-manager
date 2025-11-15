@@ -147,9 +147,9 @@ function initializeMockData(appId) {
   // 创建模拟用户
   const mockUsers = [
     { id: 'super_admin_001', name: '超级管理员', role: 'superadmin', uid: '' },
-    { id: 'admin_001', name: '管理员 (张三)', role: 'admin', uid: '' },
-    { id: 'sub_account_001', name: '子账号一号 (李四)', role: 'subaccount', uid: '' },
-    { id: 'sub_account_002', name: '子账号二号 (王五)', role: 'subaccount', uid: '' },
+    { id: 'admin_001', name: '管理员', role: 'admin', uid: '' },
+    { id: 'sub_account_001', name: '子账号一号', role: 'subaccount', uid: '' },
+    { id: 'sub_account_002', name: '子账号二号', role: 'subaccount', uid: '' },
     { id: 'sub_account_003', name: '子账号三号', role: 'subaccount', uid: '' },
     { id: 'sub_account_004', name: '子账号四号', role: 'subaccount', uid: '' },
     { id: 'sub_account_005', name: '子账号五号', role: 'subaccount', uid: '' }
