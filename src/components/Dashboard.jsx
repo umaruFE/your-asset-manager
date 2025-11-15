@@ -53,7 +53,7 @@ export default function Dashboard({ user, onLogout, getCollectionHook }) {
       </main>
       
         <footer className="py-4 text-center text-gray-500 text-sm">
-          © 2024 资产管理系统
+          © 2025 鱼苗资产管理系统
         </footer>
     </div>
   );
