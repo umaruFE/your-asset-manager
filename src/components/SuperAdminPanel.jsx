@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { Settings, Users, Plus, Trash2, ChevronDown, Loader } from 'lucide-react';
+import { Settings, Users, Plus, Trash2, ChevronDown, Loader, ArrowUp, ArrowDown, GripVertical } from 'lucide-react';
 import { Button, Modal, useModal, InputGroup, Dropdown, LoadingScreen } from '../utils/UI';
 import { generateId } from '../utils/helpers';
 
@@ -145,12 +145,36 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
     const [actionError, setActionError] = useState(null);
     const confirmModal = useModal();
     
+    // For drag and drop
+    const [draggedFieldId, setDraggedFieldId] = useState(null);
+    const [dragOverFieldId, setDragOverFieldId] = useState(null);
+    
+    // For cascading field selector
+    const [selectedFormId, setSelectedFormId] = useState(null);
+    
     // Function to update the form object in the main collection
     const updateFormFields = useCallback((newFields) => {
+        // Ensure all fields have order property
+        const fieldsWithOrder = newFields.map((field, idx) => ({
+            ...field,
+            order: field.order !== undefined ? field.order : idx
+        }));
         updateForms(prevForms => prevForms.map(f =>
-            f.id === form.id ? { ...f, fields: newFields } : f
+            f.id === form.id ? { ...f, fields: fieldsWithOrder } : f
         ));
     }, [form.id, updateForms]);
+    
+    // Initialize order for existing fields if needed
+    React.useEffect(() => {
+        const needsOrderInit = form.fields.some(f => f.order === undefined);
+        if (needsOrderInit) {
+            const fieldsWithOrder = form.fields.map((field, idx) => ({
+                ...field,
+                order: field.order !== undefined ? field.order : idx
+            }));
+            updateFormFields(fieldsWithOrder);
+        }
+    }, [form.fields, updateFormFields]);
 
     const handleAddField = (e) => {
         e.preventDefault();
@@ -167,11 +191,17 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
         setActionError(null);
         
         try {
+            // Calculate the next order value (highest order + 1, or 0 if no fields)
+            const maxOrder = form.fields.length > 0 
+                ? Math.max(...form.fields.map(f => f.order || 0))
+                : -1;
+            
             const newField = {
                 id: generateId(),
                 name: name,
                 type: newFieldType,
                 active: true,
+                order: maxOrder + 1,
                 formula: newFieldType === 'formula' ? newFieldFormula.trim() : undefined,
                 history: [{ status: "created", timestamp: Date.now() }]
             };
@@ -214,11 +244,100 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
         }
         confirmModal.close();
     };
+    
+    // Drag and drop handlers
+    const handleDragStart = (e, fieldId) => {
+        setDraggedFieldId(fieldId);
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/html', fieldId);
+    };
+    
+    const handleDragOver = (e, fieldId) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        setDragOverFieldId(fieldId);
+    };
+    
+    const handleDragLeave = () => {
+        setDragOverFieldId(null);
+    };
+    
+    const handleDrop = (e, targetFieldId) => {
+        e.preventDefault();
+        
+        if (!draggedFieldId || draggedFieldId === targetFieldId) {
+            setDraggedFieldId(null);
+            setDragOverFieldId(null);
+            return;
+        }
+        
+        const sortedFields = form.fields.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+        const draggedIndex = sortedFields.findIndex(f => f.id === draggedFieldId);
+        const targetIndex = sortedFields.findIndex(f => f.id === targetFieldId);
+        
+        if (draggedIndex === -1 || targetIndex === -1) {
+            setDraggedFieldId(null);
+            setDragOverFieldId(null);
+            return;
+        }
+        
+        // Remove dragged field and insert at target position
+        const draggedField = sortedFields[draggedIndex];
+        sortedFields.splice(draggedIndex, 1);
+        sortedFields.splice(targetIndex, 0, draggedField);
+        
+        // Update order values
+        sortedFields.forEach((f, idx) => {
+            f.order = idx;
+        });
+        
+        updateFormFields(sortedFields);
+        setDraggedFieldId(null);
+        setDragOverFieldId(null);
+    };
+    
+    const handleDragEnd = () => {
+        setDraggedFieldId(null);
+        setDragOverFieldId(null);
+    };
 
-    // Only allow active, non-formula number fields for use in formulas
-    const availableFieldNames = useMemo(() => 
-        form.fields.filter(f => f.active && f.type === 'number').map(f => f.name)
-    , [form.fields]);
+    // Get all forms for cross-form field selection
+    const { data: allForms } = getCollectionHook('forms');
+    
+    // Get available forms for cascading selector (current form + other forms)
+    const availableForms = useMemo(() => {
+        return allForms.filter(f => {
+            // Include current form and other forms that have active number fields
+            return f.id === form.id || f.fields.some(field => field.active && field.type === 'number');
+        });
+    }, [allForms, form.id]);
+    
+    // Get fields for selected form
+    const fieldsForSelectedForm = useMemo(() => {
+        if (!selectedFormId) {
+            // If no form selected, show current form fields
+            return form.fields
+                .filter(field => field.active && field.type === 'number')
+                .map(field => ({
+                    name: field.name,
+                    formName: form.name,
+                    formId: form.id,
+                    displayName: field.name
+                }));
+        }
+        
+        const selectedForm = allForms.find(f => f.id === selectedFormId);
+        if (!selectedForm) return [];
+        
+        return selectedForm.fields
+            .filter(field => field.active && field.type === 'number')
+            .map(field => ({
+                name: field.name,
+                formName: selectedForm.name,
+                formId: selectedForm.id,
+                displayName: selectedForm.id === form.id ? field.name : `${selectedForm.name}.${field.name}`
+            }));
+    }, [selectedFormId, allForms, form]);
 
     return (
         <div className="space-y-6">
@@ -269,20 +388,51 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
                     {newFieldType === 'formula' && (
                         <div className="space-y-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                             <label className="block text-sm font-medium text-gray-700">公式定义 (Formula)</label>
-                            <p className="text-xs text-gray-500 mb-2">使用 `+`, `-`, `*`, `/` 和字段名称 (如：`入库数量 * 单价`)</p>
+                            <p className="text-xs text-gray-500 mb-2">使用 `+`, `-`, `*`, `/` 和字段名称。可以选择当前表或其他表的字段 (如：`入库数量 * 单价` 或 `其他表名.字段名`)</p>
                             <div className="flex space-x-2">
                                 <input
                                     type="text"
                                     value={newFieldFormula}
                                     onChange={(e) => setNewFieldFormula(e.target.value)}
                                     className="flex-grow px-3 py-2 border border-gray-300 rounded-md shadow-sm font-mono"
-                                    placeholder="例如: 字段名称A + 字段名称B"
+                                    placeholder="例如: 字段名称A + 字段名称B 或 其他表名.字段名"
                                 />
-                                <Dropdown 
-                                    label="插入字段" 
-                                    options={availableFieldNames} 
-                                    onSelect={(fieldName) => setNewFieldFormula(prev => `${prev}${prev.slice(-1) === ' ' ? '' : ' '}${fieldName} `)}
-                                />
+                                <div className="flex space-x-2">
+                                    <select
+                                        value={selectedFormId || ''}
+                                        onChange={(e) => {
+                                            setSelectedFormId(e.target.value || null);
+                                        }}
+                                        className="px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                                    >
+                                        <option value="">当前表 ({form.name})</option>
+                                        {availableForms.filter(f => f.id !== form.id).map(f => (
+                                            <option key={f.id} value={f.id}>
+                                                {f.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    {fieldsForSelectedForm.length > 0 && (
+                                        <select
+                                            onChange={(e) => {
+                                                const selectedField = fieldsForSelectedForm.find(f => f.displayName === e.target.value);
+                                                if (selectedField) {
+                                                    setNewFieldFormula(prev => `${prev}${prev.slice(-1) === ' ' ? '' : ' '}${selectedField.displayName} `);
+                                                }
+                                                e.target.value = ''; // Reset selection
+                                            }}
+                                            className="px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                                            defaultValue=""
+                                        >
+                                            <option value="">选择字段...</option>
+                                            {fieldsForSelectedForm.map((field, idx) => (
+                                                <option key={idx} value={field.displayName}>
+                                                    {field.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     )}
@@ -301,6 +451,7 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
                     <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
                             <tr>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase w-12">排序</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">字段名称</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">类型</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">公式/ID</th>
@@ -309,8 +460,25 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
                             </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
-                            {form.fields.map(field => (
-                                <tr key={field.id}>
+                            {form.fields
+                                .slice()
+                                .sort((a, b) => (a.order || 0) - (b.order || 0))
+                                .map((field, index) => (
+                                <tr 
+                                    key={field.id}
+                                    draggable
+                                    onDragStart={(e) => handleDragStart(e, field.id)}
+                                    onDragOver={(e) => handleDragOver(e, field.id)}
+                                    onDragLeave={handleDragLeave}
+                                    onDrop={(e) => handleDrop(e, field.id)}
+                                    onDragEnd={handleDragEnd}
+                                    className={`cursor-move ${draggedFieldId === field.id ? 'opacity-50' : ''} ${dragOverFieldId === field.id ? 'bg-blue-50 border-2 border-blue-300' : ''}`}
+                                >
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                        <div className="flex items-center justify-center">
+                                            <GripVertical className="w-5 h-5 text-gray-400" />
+                                        </div>
+                                    </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{field.name}</td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                         {field.type === 'formula' ? '公式 (Formula)' : 
@@ -332,16 +500,17 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
                                             onClick={() => toggleFieldStatus(field)}
                                             size="sm"
                                         >
-                                            {field.active ? "归档" : "重新激活"}
+                                            {field.active ? "删除/归档" : "重新激活"}
                                         </Button>
-                                        <Button
-                                            variant="danger"
-                                            onClick={() => openDeleteConfirm(field)}
-                                            size="sm"
-                                            disabled={!field.active}
-                                        >
-                                            删除/归档
-                                        </Button>
+                                        {/* {field.active && (
+                                            <Button
+                                                variant="danger"
+                                                onClick={() => openDeleteConfirm(field)}
+                                                size="sm"
+                                            >
+                                                删除/归档
+                                            </Button>
+                                        )} */}
                                     </td>
                                 </tr>
                             ))}

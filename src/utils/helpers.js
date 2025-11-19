@@ -30,12 +30,20 @@ export const loadInitialCollections = () => {
 /**
  * Executes a calculation based on a simple formula string.
  * Supports +, -, *, /. Example: "fieldIdA + fieldIdB * 2"
+ * Also supports cross-form fields: "表名.字段名"
  * Note: Only supports single operation per formula for simplicity.
+ * 
+ * @param {string} formula - The formula string
+ * @param {object} rowData - Current row data (fieldId -> value mapping)
+ * @param {array} fields - Current form fields
+ * @param {object} options - Optional: { allForms, allAssets, currentFormId }
  */
-export const calculateFormula = (formula, rowData, fields) => {
+export const calculateFormula = (formula, rowData, fields, options = {}) => {
     if (!formula || typeof formula !== 'string') return '';
     
-    // Create a map of field names to their current numerical value
+    const { allForms = [], allAssets = [], currentFormId = null } = options;
+    
+    // Create a map of field names to their current numerical value (current form)
     const valueMap = fields.reduce((acc, field) => {
         // Use field name as key, retrieve value from rowData by field ID
         // Note: Field IDs are used in rowData keys, but names are used in the formula string.
@@ -43,15 +51,52 @@ export const calculateFormula = (formula, rowData, fields) => {
         acc[field.name] = value;
         return acc;
     }, {});
+    
+    // Add cross-form field values
+    // Format: "表名.字段名"
+    allForms.forEach(form => {
+        if (form.id === currentFormId) return; // Skip current form (already in valueMap)
+        
+        form.fields
+            .filter(field => field.active && field.type === 'number')
+            .forEach(field => {
+                const crossFormKey = `${form.name}.${field.name}`;
+                
+                // Try to get value from other forms' assets
+                // For now, we'll get the latest value from the most recent asset batch
+                let crossFormValue = 0;
+                
+                // Find the most recent asset batch for this form
+                const formAssets = allAssets
+                    .filter(asset => asset.formId === form.id)
+                    .sort((a, b) => b.submittedAt - a.submittedAt);
+                
+                if (formAssets.length > 0) {
+                    // Get the latest batch and try to find the field value
+                    const latestBatch = formAssets[0];
+                    if (latestBatch.batchData && latestBatch.batchData.length > 0) {
+                        // Get the first row's value for this field
+                        const firstRow = latestBatch.batchData[0];
+                        crossFormValue = Number(firstRow[field.id]) || 0;
+                    }
+                }
+                
+                valueMap[crossFormKey] = crossFormValue;
+            });
+    });
 
-    // Regex to identify field names in the formula (must match names used in valueMap)
-    // This regex looks for sequences of Chinese characters, English letters, numbers, spaces, and parentheses.
-    // The key is to map the user-friendly field names in the formula to the numerical values.
-    const fieldNameRegex = /([a-zA-Z0-9\u4e00-\u9fa5\s\(\)\[\]\{\}]+)/g; 
+    // Regex to identify field names in the formula
+    // Updated to support "表名.字段名" format
+    // This regex looks for sequences that could be field names or "表名.字段名"
+    const fieldNameRegex = /([a-zA-Z0-9\u4e00-\u9fa5\s\(\)\[\]\{\}]+(?:\.[a-zA-Z0-9\u4e00-\u9fa5\s\(\)\[\]\{\}]+)?)/g; 
     
     let calculationString = formula.replace(fieldNameRegex, (match) => {
         const trimmedMatch = match.trim();
-        // Replace field NAME with its value from valueMap
+        // Skip if it's an operator or number
+        if (/^[\+\-\*\/\(\)\s]+$/.test(trimmedMatch) || !isNaN(trimmedMatch)) {
+            return trimmedMatch;
+        }
+        // Replace field NAME (or "表名.字段名") with its value from valueMap
         return valueMap[trimmedMatch] !== undefined ? valueMap[trimmedMatch] : 0;
     });
 

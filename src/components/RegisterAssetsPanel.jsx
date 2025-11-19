@@ -4,6 +4,7 @@ import { generateId, calculateFormula } from '../utils/helpers';
 
 export default function RegisterAssetsPanel({ user, form, getCollectionHook, onAssetRegistered }) {
   const { data: allForms } = getCollectionHook('forms'); // Need all forms to reference fields by name
+  const { data: allAssets } = getCollectionHook('assets'); // Need all assets for cross-form field calculation
   const { update: updateAssets } = getCollectionHook('assets');
 
   const [rows, setRows] = useState([{}]); // 初始化一行空数据
@@ -22,8 +23,13 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
     // 1. Calculate formulas
     form.fields.filter(f => f.type === 'formula' && f.active).forEach(field => {
         if (field.formula) {
-            // Formula calculation uses field names (e.g., "入库数量 * 单价")
-            const calculatedValue = calculateFormula(field.formula, newRow, form.fields);
+            // Formula calculation uses field names (e.g., "入库数量 * 单价" or "其他表名.字段名")
+            const calculatedValue = calculateFormula(
+                field.formula, 
+                newRow, 
+                form.fields,
+                { allForms, allAssets, currentFormId: form.id }
+            );
             
             // Update ID-based result
             newRow[field.id] = calculatedValue;
@@ -31,7 +37,7 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
     });
 
     return newRow;
-  }, [form.fields]);
+  }, [form.fields, allForms, allAssets, form.id]);
 
   // 初始化第一行数据
   useEffect(() => {
