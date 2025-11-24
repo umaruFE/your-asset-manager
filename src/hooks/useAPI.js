@@ -14,10 +14,11 @@ export function useAPI() {
             let mounted = true;
 
             async function loadData() {
-                try {
-                    setLoading(true);
-                    let result = [];
+                setLoading(true);
+                let result = [];
+                let error = null;
 
+                try {
                     switch (collectionName) {
                         case 'forms':
                             result = await formsAPI.getAll();
@@ -30,22 +31,28 @@ export function useAPI() {
                             break;
                         case 'allAppUsers':
                             // 根据用户角色决定获取哪些用户
+                            // 先尝试获取所有用户（超级管理员），如果失败则尝试获取经手人列表
                             try {
-                                // 先尝试获取所有用户（超级管理员）
+                                console.log('[useAPI] 尝试 getAll()...');
                                 result = await usersAPI.getAll();
+                                console.log('[useAPI] getAll() 成功，获取到', result?.length || 0, '个用户');
                             } catch (err) {
-                                // 如果不是超级管理员，尝试获取基地经手人列表（基地负责人）
-                                if (err.message.includes('Insufficient permissions') || err.message.includes('403') || err.message.includes('Access denied')) {
-                                    try {
-                                        result = await usersAPI.getMyBaseHandlers();
-                                    } catch (err2) {
-                                        // 如果都失败，返回空数组（不抛出错误，避免阻塞UI）
-                                        console.warn('无法获取用户列表:', err2.message);
-                                        result = [];
-                                    }
-                                } else {
-                                    // 其他错误也返回空数组，避免阻塞UI
-                                    console.warn('获取用户列表失败:', err.message);
+                                console.log('[useAPI] getAll() 失败，错误:', err.message, '状态:', err.response?.status);
+                                // 如果不是超级管理员，尝试获取基地经手人列表
+                                // 支持的角色：base_manager（自己基地的经手人）、company_asset、company_finance（所有经手人）
+                                try {
+                                    console.log('[useAPI] 尝试 getMyBaseHandlers()...');
+                                    result = await usersAPI.getMyBaseHandlers();
+                                    console.log('[useAPI] getMyBaseHandlers() 成功，获取到', result?.length || 0, '个用户');
+                                } catch (err2) {
+                                    // 如果都失败，返回空数组（不抛出错误，避免阻塞UI）
+                                    console.warn('[useAPI] getMyBaseHandlers() 也失败:', {
+                                        message: err2.message,
+                                        status: err2.response?.status,
+                                        response: err2.response,
+                                        data: err2.data,
+                                        fullError: err2
+                                    }, '使用空数组');
                                     result = [];
                                 }
                             }
@@ -53,20 +60,16 @@ export function useAPI() {
                         default:
                             result = [];
                     }
-
-                    if (mounted) {
-                        setData(result);
-                        setError(null);
-                    }
                 } catch (err) {
-                    if (mounted) {
-                        setError(err.message);
-                        setData([]);
-                    }
-                } finally {
-                    if (mounted) {
-                        setLoading(false);
-                    }
+                    // 只有未处理的错误才会到这里
+                    error = err.message;
+                    result = [];
+                }
+
+                if (mounted) {
+                    setData(result);
+                    setError(error);
+                    setLoading(false);
                 }
             }
 

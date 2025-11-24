@@ -33,29 +33,51 @@ router.get('/bases', authenticateToken, requireRole('superadmin'), async (req, r
 });
 
 // 获取当前用户基地的经手人列表（基地负责人使用）
+// 或者获取所有经手人列表（公司资产员、公司财务使用）
 router.get('/my-base-handlers', authenticateToken, async (req, res, next) => {
     try {
-        // 只有基地负责人可以使用此接口
-        if (req.user.role !== 'base_manager') {
-            return res.status(403).json({ error: 'Access denied' });
+        console.log('[users.js] /my-base-handlers 请求，用户角色:', req.user.role, '用户ID:', req.user.id);
+        
+        // 基地负责人：获取自己基地的经手人
+        if (req.user.role === 'base_manager') {
+            if (!req.user.baseId) {
+                console.log('[users.js] base_manager 没有 baseId，返回空数组');
+                return res.json([]);
+            }
+
+            const result = await pool.query(
+                `SELECT u.id, u.username, u.name, u.role, u.base_id, b.name as base_name 
+                 FROM users u 
+                 LEFT JOIN bases b ON u.base_id = b.id 
+                 WHERE u.role = 'base_handler' AND u.base_id = $1 
+                 ORDER BY u.name`,
+                [req.user.baseId]
+            );
+
+            console.log('[users.js] base_manager 返回', result.rows.length, '个经手人');
+            return res.json(result.rows.map(toCamelCaseObject));
+        }
+        
+        // 公司资产员、公司财务：获取所有经手人（用于查看所有记录时显示提交人）
+        if (req.user.role === 'company_asset' || req.user.role === 'company_finance') {
+            console.log('[users.js] company_asset/company_finance 获取所有经手人');
+            const result = await pool.query(
+                `SELECT u.id, u.username, u.name, u.role, u.base_id, b.name as base_name 
+                 FROM users u 
+                 LEFT JOIN bases b ON u.base_id = b.id 
+                 WHERE u.role = 'base_handler' 
+                 ORDER BY u.name`
+            );
+
+            console.log('[users.js] company_asset/company_finance 返回', result.rows.length, '个经手人');
+            return res.json(result.rows.map(toCamelCaseObject));
         }
 
-        if (!req.user.baseId) {
-            return res.json([]);
-        }
-
-        // 获取同一基地的所有基地经手人
-        const result = await pool.query(
-            `SELECT u.id, u.username, u.name, u.role, u.base_id, b.name as base_name 
-             FROM users u 
-             LEFT JOIN bases b ON u.base_id = b.id 
-             WHERE u.role = 'base_handler' AND u.base_id = $1 
-             ORDER BY u.name`,
-            [req.user.baseId]
-        );
-
-        res.json(result.rows);
+        // 其他角色无权访问
+        console.log('[users.js] 角色', req.user.role, '无权访问，返回 403');
+        return res.status(403).json({ error: 'Access denied' });
     } catch (error) {
+        console.error('[users.js] /my-base-handlers 错误:', error);
         next(error);
     }
 });
