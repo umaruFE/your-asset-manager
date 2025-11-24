@@ -232,11 +232,11 @@ export default function SubAccountPanel({ user, getCollectionHook }) {
                             const isClosable = openTabs.length > 1; // Always keep at least one tab open
 
                             return (
-                                <button
+                                <div
                     key={tab.id}
                     data-tab-id={tab.id}
                     onClick={() => setActiveTabId(tab.id)}
-                    className={`group inline-flex items-center justify-between px-4 py-3 border-b-2 text-sm font-medium transition-colors duration-200 flex-shrink-0 min-w-[200px]
+                    className={`group inline-flex items-center justify-between px-4 py-3 border-b-2 text-sm font-medium transition-colors duration-200 flex-shrink-0 min-w-[200px] cursor-pointer
                         ${isActive
                             ? 'border-blue-600 text-blue-700 bg-gray-50'
                             : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 hover:bg-gray-50'
@@ -260,7 +260,7 @@ export default function SubAccountPanel({ user, getCollectionHook }) {
                                             <X className="w-3 h-3" />
                                         </button>
                                     )}
-                                </button>
+                                </div>
                             );
                         })}
                     </nav>
@@ -361,14 +361,41 @@ function ViewMyAssetsPanel({ user, getCollectionHook, forms }) {
 
 // 资产卡片 (AssetCard remains the same, works with new structure)
 function AssetCard({ asset, onClick }) {
-    const submittedDate = new Date(asset.submittedAt).toLocaleDateString() || 'N/A';
+    // 处理时间戳：支持毫秒时间戳和日期字符串
+    let submittedDate = 'N/A';
+    if (asset.submittedAt) {
+        try {
+            // 如果是数字（时间戳），直接使用
+            // 如果是字符串，尝试解析
+            const timestamp = typeof asset.submittedAt === 'number' 
+                ? asset.submittedAt 
+                : parseInt(asset.submittedAt);
+            
+            if (!isNaN(timestamp) && timestamp > 0) {
+                const date = new Date(timestamp);
+                if (!isNaN(date.getTime())) {
+                    submittedDate = date.toLocaleString('zh-CN', {
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+                }
+            }
+        } catch (e) {
+            console.error('日期解析错误:', e, asset.submittedAt);
+        }
+    }
+    
     const recordCount = asset.batchData?.length || 0;
     
     // Find the first non-formula/non-textarea field to use as the title
     const titleField = asset.fieldsSnapshot?.find(f => f.type !== 'formula' && f.type !== 'textarea') || asset.fieldsSnapshot?.[0]; 
     const firstRecord = asset.batchData?.[0] || {};
     const firstFieldId = titleField?.id; 
-    const title = firstRecord[firstFieldId] || `${asset.formName || '记录'} #${asset.id.substring(0, 6)}`;
+    // 移除ID显示，只显示表单名称或第一个字段的值
+    const title = firstRecord[firstFieldId] || asset.formName || '记录';
 
     return (
       <button 
@@ -398,28 +425,94 @@ function AssetCard({ asset, onClick }) {
 function ViewAssetDetailModal({ asset, isOpen, onClose }) {
   if (!asset) return null;
 
-  // 转换时间戳 (number) 到日期字符串
-  const submittedDate = new Date(asset.submittedAt).toLocaleString() || 'N/A';
+  // 处理时间戳：支持毫秒时间戳和日期字符串
+  let submittedDate = 'N/A';
+  if (asset.submittedAt) {
+      try {
+          const timestamp = typeof asset.submittedAt === 'number' 
+              ? asset.submittedAt 
+              : parseInt(asset.submittedAt);
+          
+          if (!isNaN(timestamp) && timestamp > 0) {
+              const date = new Date(timestamp);
+              if (!isNaN(date.getTime())) {
+                  submittedDate = date.toLocaleString('zh-CN', {
+                      year: 'numeric',
+                      month: '2-digit',
+                      day: '2-digit',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit'
+                  });
+              }
+          }
+      } catch (e) {
+          console.error('日期解析错误:', e, asset.submittedAt);
+      }
+  }
   
-  // 创建一个 字段ID -> 字段名称 的映射
+  // 创建一个 字段ID -> 字段名称 的映射，以及 字段名称 -> 字段ID 的映射
   const fieldIdToName = React.useMemo(() => {
+      if (!asset.fieldsSnapshot || !Array.isArray(asset.fieldsSnapshot)) {
+          return {};
+      }
       return asset.fieldsSnapshot.reduce((acc, field) => {
-        acc[field.id] = field.name;
+        if (field && field.id && field.name) {
+            acc[field.id] = field.name;
+        }
+        return acc;
+      }, {});
+  }, [asset.fieldsSnapshot]);
+  
+  const fieldNameToId = React.useMemo(() => {
+      if (!asset.fieldsSnapshot || !Array.isArray(asset.fieldsSnapshot)) {
+          return {};
+      }
+      return asset.fieldsSnapshot.reduce((acc, field) => {
+        if (field && field.id && field.name) {
+            acc[field.name] = field.id;
+        }
         return acc;
       }, {});
   }, [asset.fieldsSnapshot]);
   
   // 获取所有在快照中出现过的字段 (用于表头)
-  const allFieldIdsInBatch = React.useMemo(() => {
-      const idSet = new Set();
+  // 支持两种格式：字段ID作为键，或字段名称作为键
+  const allFieldKeysInBatch = React.useMemo(() => {
+      if (!asset.batchData || !Array.isArray(asset.batchData) || asset.batchData.length === 0) {
+          return [];
+      }
+      
+      const keySet = new Set();
       asset.batchData.forEach(row => {
-        Object.keys(row).forEach(fieldId => idSet.add(fieldId));
+        if (row && typeof row === 'object') {
+            Object.keys(row).forEach(key => keySet.add(key));
+        }
       });
+      
+      // 判断batchData中的键是字段ID还是字段名称
+      const firstRow = asset.batchData[0];
+      const firstKey = firstRow ? Object.keys(firstRow)[0] : null;
+      const isUsingFieldNames = firstKey && fieldNameToId[firstKey]; // 如果第一个键能在名称映射中找到，说明使用的是字段名称
+      
       // 保持快照中的顺序
-      return asset.fieldsSnapshot
-        .map(f => f.id)
-        .filter(id => idSet.has(id));
-  }, [asset.batchData, asset.fieldsSnapshot]);
+      if (asset.fieldsSnapshot && Array.isArray(asset.fieldsSnapshot)) {
+          if (isUsingFieldNames) {
+              // 如果使用字段名称，返回字段名称列表
+              return asset.fieldsSnapshot
+                .map(f => f?.name)
+                .filter(name => name && keySet.has(name));
+          } else {
+              // 如果使用字段ID，返回字段ID列表
+              return asset.fieldsSnapshot
+                .map(f => f?.id)
+                .filter(id => id && keySet.has(id));
+          }
+      }
+      
+      // 如果没有快照，返回所有在数据中出现的键
+      return Array.from(keySet);
+  }, [asset.batchData, asset.fieldsSnapshot, fieldNameToId]);
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="查看记录详情">
@@ -436,30 +529,46 @@ function ViewAssetDetailModal({ asset, isOpen, onClose }) {
             </p>
         )}
         
-        <div className="overflow-x-auto border border-gray-200 rounded-lg mt-4">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                {allFieldIdsInBatch.map(fieldId => (
-                  <th key={fieldId} scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    {fieldIdToName[fieldId] || '未知字段'}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {asset.batchData.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  {allFieldIdsInBatch.map(fieldId => (
-                    <td key={fieldId} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                      {row[fieldId] || 'N/A'}
-                    </td>
-                  ))}
+        {allFieldKeysInBatch.length > 0 && asset.batchData && asset.batchData.length > 0 ? (
+          <div className="overflow-x-auto border border-gray-200 rounded-lg mt-4">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  {allFieldKeysInBatch.map(fieldKey => {
+                    // fieldKey可能是字段ID或字段名称
+                    const fieldName = fieldIdToName[fieldKey] || fieldKey; // 如果是ID，转换为名称；如果是名称，直接使用
+                    return (
+                      <th key={fieldKey} scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        {fieldName || '未知字段'}
+                      </th>
+                    );
+                  })}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {asset.batchData.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {allFieldKeysInBatch.map(fieldKey => (
+                      <td key={fieldKey} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                        {row[fieldKey] !== undefined && row[fieldKey] !== null ? String(row[fieldKey]) : 'N/A'}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="mt-4 p-4 bg-gray-50 rounded-lg text-center text-gray-500">
+            <p>暂无数据</p>
+            {(!asset.batchData || asset.batchData.length === 0) && (
+              <p className="text-sm mt-2">该记录没有包含任何数据</p>
+            )}
+            {(!asset.fieldsSnapshot || asset.fieldsSnapshot.length === 0) && (
+              <p className="text-sm mt-2">该记录的字段信息缺失</p>
+            )}
+          </div>
+        )}
       </div>
       <div className="mt-6 flex justify-end">
         <Button variant="outline" onClick={onClose}>

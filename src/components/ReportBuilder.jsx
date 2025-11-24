@@ -1,0 +1,745 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { Plus, Trash2, Save, Play, X } from 'lucide-react';
+import { Button, Modal, useModal, InputGroup, LoadingScreen } from '../utils/UI';
+import { reportsAPI } from '../utils/api';
+
+export default function ReportBuilder({ user, getCollectionHook, editingReport, onClose }) {
+    const { data: forms, loading: formsLoading } = getCollectionHook('forms');
+    const [reportName, setReportName] = useState('');
+    const [reportDescription, setReportDescription] = useState('');
+    const [selectedForms, setSelectedForms] = useState([]);
+    const [selectedFields, setSelectedFields] = useState([]);
+    const [aggregations, setAggregations] = useState([]);
+    const [calculations, setCalculations] = useState([]);
+    const [isSaving, setIsSaving] = useState(false);
+    const [isExecuting, setIsExecuting] = useState(false);
+    const [executionResult, setExecutionResult] = useState(null);
+    const [loadingReport, setLoadingReport] = useState(false);
+    const saveModal = useModal();
+
+    // 如果是编辑模式，加载报表数据
+    useEffect(() => {
+        if (editingReport) {
+            loadReportData(editingReport);
+        } else {
+            // 如果不是编辑模式，重置所有状态
+            setReportName('');
+            setReportDescription('');
+            setSelectedForms([]);
+            setSelectedFields([]);
+            setAggregations([]);
+            setCalculations([]);
+            setExecutionResult(null);
+        }
+    }, [editingReport]);
+
+    // 加载报表数据并回填表单
+    const loadReportData = async (report) => {
+        try {
+            setLoadingReport(true);
+            // 如果 report 已经有完整数据（包括 config），直接使用
+            // 否则从 API 获取
+            let reportData = report;
+            if (!reportData.config && reportData.id) {
+                reportData = await reportsAPI.getById(reportData.id);
+            }
+
+            // 设置基本信息
+            setReportName(reportData.name || '');
+            setReportDescription(reportData.description || '');
+
+            // 解析 config（可能是 JSONB 对象或字符串）
+            // 后端已经应用了 toCamelCaseObject，所以使用 camelCase 格式
+            let config = reportData.config || {};
+            if (typeof config === 'string') {
+                try {
+                    config = JSON.parse(config);
+                } catch (e) {
+                    console.error('Failed to parse config:', e);
+                    config = {};
+                }
+            }
+
+            // 回填选中的表单
+            if (config.selectedForms && Array.isArray(config.selectedForms)) {
+                setSelectedForms(config.selectedForms);
+            }
+
+            // 回填选中的字段
+            if (config.selectedFields && Array.isArray(config.selectedFields)) {
+                setSelectedFields(config.selectedFields);
+            }
+
+            // 回填聚合函数（确保每个都有 id）
+            if (config.aggregations && Array.isArray(config.aggregations)) {
+                const aggsWithIds = config.aggregations.map((agg, index) => ({
+                    formId: agg.formId,
+                    fieldId: agg.fieldId,
+                    fieldName: agg.fieldName,
+                    function: agg.function || 'SUM',
+                    id: agg.id || `agg_${Date.now()}_${index}`
+                }));
+                setAggregations(aggsWithIds);
+            }
+
+            // 回填计算字段（确保每个都有 id）
+            if (config.calculations && Array.isArray(config.calculations)) {
+                // 获取所有可用字段（用于解析表达式）
+                const allFields = [];
+                selectedForms.forEach(formId => {
+                    const form = forms.find(f => f.id === formId);
+                    if (form && form.fields) {
+                        form.fields
+                            .filter(field => field.active)
+                            .forEach(field => {
+                                allFields.push({
+                                    formId: form.id,
+                                    formName: form.name,
+                                    fieldId: field.id,
+                                    fieldName: field.name,
+                                    fieldType: field.type
+                                });
+                            });
+                    }
+                });
+
+                const calcsWithIds = config.calculations.map((calc, index) => {
+                    // 如果已有表达式但没有parts，尝试解析表达式构建parts
+                    let parts = calc.parts || [];
+                    if (!parts.length && calc.expression) {
+                        // 简单解析：按空格分割，识别字段ID和运算符
+                        const tokens = calc.expression.split(/\s+/);
+                        parts = tokens.map(token => {
+                            // 检查是否是运算符
+                            if (['+', '-', '*', '/'].includes(token)) {
+                                return { type: 'operator', value: token };
+                            }
+                            // 检查是否是数字
+                            if (!isNaN(token) && token !== '') {
+                                return { type: 'number', value: token };
+                            }
+                            // 否则是字段ID
+                            const field = allFields.find(f => f.fieldId === token);
+                            return { type: 'field', fieldId: token, fieldName: field?.fieldName || token };
+                        });
+                    }
+                    return {
+                        name: calc.name || `计算字段${index + 1}`,
+                        expression: calc.expression || '',
+                        parts: parts,
+                        id: calc.id || `calc_${Date.now()}_${index}`
+                    };
+                });
+                setCalculations(calcsWithIds);
+            }
+        } catch (error) {
+            console.error('Failed to load report data:', error);
+            alert('加载报表数据失败: ' + error.message);
+        } finally {
+            setLoadingReport(false);
+        }
+    };
+
+    // 获取所有可用字段（从选中的表单中）
+    const availableFields = useMemo(() => {
+        const fields = [];
+        selectedForms.forEach(formId => {
+            const form = forms.find(f => f.id === formId);
+            if (form && form.fields) {
+                form.fields
+                    .filter(field => field.active)
+                    .forEach(field => {
+                        fields.push({
+                            formId: form.id,
+                            formName: form.name,
+                            fieldId: field.id,
+                            fieldName: field.name,
+                            fieldType: field.type
+                        });
+                    });
+            }
+        });
+        return fields;
+    }, [selectedForms, forms]);
+
+    // 切换表单选择
+    const toggleForm = (formId) => {
+        setSelectedForms(prev => {
+            if (prev.includes(formId)) {
+                // 取消选择时，移除相关字段和聚合
+                const form = forms.find(f => f.id === formId);
+                const formFieldIds = form?.fields?.map(f => f.id) || [];
+                setSelectedFields(prevFields => 
+                    prevFields.filter(f => f.formId !== formId)
+                );
+                setAggregations(prevAggs => 
+                    prevAggs.filter(a => a.formId !== formId)
+                );
+                return prev.filter(id => id !== formId);
+            } else {
+                return [...prev, formId];
+            }
+        });
+    };
+
+    // 切换字段选择
+    const toggleField = (field) => {
+        setSelectedFields(prev => {
+            const exists = prev.find(f => f.formId === field.formId && f.fieldId === field.fieldId);
+            if (exists) {
+                return prev.filter(f => !(f.formId === field.formId && f.fieldId === field.fieldId));
+            } else {
+                return [...prev, field];
+            }
+        });
+    };
+
+    // 添加聚合函数
+    const addAggregation = () => {
+        if (availableFields.length === 0) {
+            alert('请先选择表单和字段');
+            return;
+        }
+        setAggregations(prev => [...prev, {
+            id: Date.now().toString(),
+            formId: availableFields[0].formId,
+            fieldId: availableFields[0].fieldId,
+            fieldName: availableFields[0].fieldName,
+            function: 'SUM' // SUM, AVG, COUNT, MAX, MIN
+        }]);
+    };
+
+    // 更新聚合函数
+    const updateAggregation = (id, updates) => {
+        setAggregations(prev => prev.map(agg => 
+            agg.id === id ? { ...agg, ...updates } : agg
+        ));
+    };
+
+    // 删除聚合函数
+    const removeAggregation = (id) => {
+        setAggregations(prev => prev.filter(agg => agg.id !== id));
+    };
+
+    // 添加计算字段
+    const addCalculation = () => {
+        setCalculations(prev => [...prev, {
+            id: Date.now().toString(),
+            name: `计算字段${prev.length + 1}`,
+            expression: '',
+            parts: [] // 存储表达式部分：[{type: 'field', fieldId: 'xxx'}, {type: 'operator', value: '+'}, ...]
+        }]);
+    };
+
+    // 添加字段到计算表达式
+    const addFieldToCalculation = (calcId, field) => {
+        setCalculations(prev => prev.map(calc => {
+            if (calc.id === calcId) {
+                const newParts = [...(calc.parts || []), { type: 'field', fieldId: field.fieldId, fieldName: field.fieldName }];
+                const expression = buildExpressionFromParts(newParts);
+                return { ...calc, parts: newParts, expression };
+            }
+            return calc;
+        }));
+    };
+
+    // 添加运算符到计算表达式
+    const addOperatorToCalculation = (calcId, operator) => {
+        setCalculations(prev => prev.map(calc => {
+            if (calc.id === calcId) {
+                const newParts = [...(calc.parts || []), { type: 'operator', value: operator }];
+                const expression = buildExpressionFromParts(newParts);
+                return { ...calc, parts: newParts, expression };
+            }
+            return calc;
+        }));
+    };
+
+    // 从表达式部分构建表达式字符串（使用字段ID）
+    const buildExpressionFromParts = (parts) => {
+        return parts.map(part => {
+            if (part.type === 'field') {
+                return part.fieldId; // 使用字段ID
+            } else if (part.type === 'operator') {
+                return part.value;
+            } else if (part.type === 'number') {
+                return part.value;
+            }
+            return '';
+        }).join(' ');
+    };
+
+    // 添加数字到计算表达式
+    const addNumberToCalculation = (calcId, number) => {
+        setCalculations(prev => prev.map(calc => {
+            if (calc.id === calcId) {
+                const newParts = [...(calc.parts || []), { type: 'number', value: number }];
+                const expression = buildExpressionFromParts(newParts);
+                return { ...calc, parts: newParts, expression };
+            }
+            return calc;
+        }));
+    };
+
+    // 删除计算表达式的最后一个部分
+    const removeLastPartFromCalculation = (calcId) => {
+        setCalculations(prev => prev.map(calc => {
+            if (calc.id === calcId) {
+                const newParts = (calc.parts || []).slice(0, -1);
+                const expression = buildExpressionFromParts(newParts);
+                return { ...calc, parts: newParts, expression };
+            }
+            return calc;
+        }));
+    };
+
+    // 清空计算表达式
+    const clearCalculationExpression = (calcId) => {
+        setCalculations(prev => prev.map(calc => {
+            if (calc.id === calcId) {
+                return { ...calc, parts: [], expression: '' };
+            }
+            return calc;
+        }));
+    };
+
+    // 更新计算字段
+    const updateCalculation = (id, updates) => {
+        setCalculations(prev => prev.map(calc => 
+            calc.id === id ? { ...calc, ...updates } : calc
+        ));
+    };
+
+    // 删除计算字段
+    const removeCalculation = (id) => {
+        setCalculations(prev => prev.filter(calc => calc.id !== id));
+    };
+
+    // 保存报表
+    const handleSave = async () => {
+        if (!reportName.trim()) {
+            alert('请输入报表名称');
+            return;
+        }
+
+        if (selectedForms.length === 0) {
+            alert('请至少选择一个表单');
+            return;
+        }
+
+        setIsSaving(true);
+        try {
+            const config = {
+                selectedForms,
+                selectedFields,
+                aggregations,
+                calculations,
+                filters: {}
+            };
+
+            if (editingReport && editingReport.id) {
+                // 更新现有报表
+                await reportsAPI.update(editingReport.id, {
+                    name: reportName,
+                    description: reportDescription,
+                    config
+                });
+            } else {
+                // 创建新报表
+                await reportsAPI.create({
+                    name: reportName,
+                    description: reportDescription,
+                    config
+                });
+            }
+
+            saveModal.open({
+                title: '保存成功',
+                description: editingReport ? '报表已更新' : '报表已保存',
+                onConfirm: () => {
+                    saveModal.close();
+                    onClose();
+                }
+            });
+        } catch (error) {
+            alert('保存失败: ' + error.message);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    // 执行报表
+    const handleExecute = async () => {
+        if (selectedForms.length === 0) {
+            alert('请至少选择一个表单');
+            return;
+        }
+
+        setIsExecuting(true);
+        try {
+            // 先保存临时报表
+            const config = {
+                selectedForms,
+                selectedFields,
+                aggregations,
+                calculations,
+                filters: {}
+            };
+
+            const tempReport = await reportsAPI.create({
+                name: `临时报表_${Date.now()}`,
+                description: '临时执行报表',
+                config
+            });
+
+            // 执行报表
+            const result = await reportsAPI.execute(tempReport.id);
+            setExecutionResult(result);
+
+            // 删除临时报表
+            await reportsAPI.delete(tempReport.id);
+        } catch (error) {
+            // 尝试解析错误响应
+            let errorMessage = error.message || '执行失败';
+            let errorSuggestion = '';
+            
+            try {
+                const errorData = error.response?.data || error.data;
+                if (errorData) {
+                    if (errorData.error) {
+                        errorMessage = errorData.error;
+                    }
+                    if (errorData.message) {
+                        errorMessage += '\n\n' + errorData.message;
+                    }
+                    if (errorData.suggestion) {
+                        errorSuggestion = errorData.suggestion;
+                    }
+                }
+            } catch (e) {
+                // 如果解析失败，使用原始错误信息
+            }
+            
+            const fullMessage = errorSuggestion 
+                ? `${errorMessage}\n\n${errorSuggestion}`
+                : errorMessage;
+            
+            alert(fullMessage);
+        } finally {
+            setIsExecuting(false);
+        }
+    };
+
+    if (formsLoading || loadingReport) {
+        return <LoadingScreen message={loadingReport ? "加载报表数据中..." : "加载表单数据中..."} />;
+    }
+
+    return (
+        <div className="space-y-6 p-6 bg-white rounded-xl shadow-lg">
+            <div className="flex justify-between items-center pb-4 border-b border-gray-200">
+                <h2 className="text-2xl font-bold text-gray-800">
+                    {editingReport ? '编辑统计报表' : '创建统计报表'}
+                </h2>
+                <Button variant="outline" onClick={onClose}>
+                    <X className="w-5 h-5 mr-2" /> 关闭
+                </Button>
+            </div>
+
+            {/* 基本信息 */}
+            <div className="space-y-4">
+                <InputGroup label="报表名称">
+                    <input
+                        type="text"
+                        value={reportName}
+                        onChange={(e) => setReportName(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                        placeholder="例如：月度资产统计报表"
+                    />
+                </InputGroup>
+                <InputGroup label="报表描述（可选）">
+                    <textarea
+                        value={reportDescription}
+                        onChange={(e) => setReportDescription(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                        rows="2"
+                        placeholder="报表说明..."
+                    />
+                </InputGroup>
+            </div>
+
+            {/* 选择表单 */}
+            <div className="space-y-2">
+                <h3 className="text-lg font-semibold text-gray-700">1. 选择表单</h3>
+                <div className="grid grid-cols-2 gap-2">
+                    {forms.filter(f => f.isActive).map(form => (
+                        <label key={form.id} className="flex items-center space-x-2 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
+                            <input
+                                type="checkbox"
+                                checked={selectedForms.includes(form.id)}
+                                onChange={() => toggleForm(form.id)}
+                                className="w-4 h-4"
+                            />
+                            <span>{form.name}</span>
+                        </label>
+                    ))}
+                </div>
+            </div>
+
+            {/* 选择字段 */}
+            {availableFields.length > 0 && (
+                <div className="space-y-2">
+                    <h3 className="text-lg font-semibold text-gray-700">2. 选择字段</h3>
+                    <p className="text-sm text-gray-500 mb-2">可以选择所有类型的字段进行显示</p>
+                    <div className="grid grid-cols-3 gap-2 max-h-48 overflow-y-auto">
+                        {availableFields.map(field => (
+                            <label key={`${field.formId}_${field.fieldId}`} className="flex items-center space-x-2 p-2 border rounded cursor-pointer hover:bg-gray-50">
+                                <input
+                                    type="checkbox"
+                                    checked={selectedFields.some(f => f.formId === field.formId && f.fieldId === field.fieldId)}
+                                    onChange={() => toggleField(field)}
+                                    className="w-4 h-4"
+                                />
+                                <span className="text-sm">
+                                    <span className="text-gray-500">{field.formName}:</span> {field.fieldName}
+                                    {field.fieldType && (
+                                        <span className="ml-1 text-xs text-gray-400">({field.fieldType})</span>
+                                    )}
+                                </span>
+                            </label>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* 聚合函数 */}
+            <div className="space-y-2">
+                <div className="flex justify-between items-start">
+                    <div>
+                        <h3 className="text-lg font-semibold text-gray-700">3. 聚合函数（求和、平均值等）</h3>
+                        <p className="text-sm text-gray-500 mt-1">注意：SUM、AVG、MAX、MIN 仅适用于数字类型字段，COUNT 适用于所有类型</p>
+                    </div>
+                    <Button size="sm" variant="outline" onClick={addAggregation}>
+                        <Plus className="w-4 h-4 mr-1" /> 添加
+                    </Button>
+                </div>
+                <div className="space-y-2">
+                    {aggregations.map(agg => (
+                        <div key={agg.id} className="flex items-center space-x-2 p-3 bg-gray-50 rounded-lg">
+                            <select
+                                value={agg.function}
+                                onChange={(e) => updateAggregation(agg.id, { function: e.target.value })}
+                                className="px-2 py-1 border rounded text-sm"
+                            >
+                                <option value="SUM">求和 (SUM)</option>
+                                <option value="AVG">平均值 (AVG)</option>
+                                <option value="COUNT">计数 (COUNT)</option>
+                                <option value="MAX">最大值 (MAX)</option>
+                                <option value="MIN">最小值 (MIN)</option>
+                            </select>
+                            <select
+                                value={`${agg.formId}_${agg.fieldId}`}
+                                onChange={(e) => {
+                                    const [formId, fieldId] = e.target.value.split('_');
+                                    const field = availableFields.find(f => f.formId === formId && f.fieldId === fieldId);
+                                    if (field) {
+                                        updateAggregation(agg.id, {
+                                            formId: field.formId,
+                                            fieldId: field.fieldId,
+                                            fieldName: field.fieldName
+                                        });
+                                    }
+                                }}
+                                className="flex-grow px-2 py-1 border rounded text-sm"
+                            >
+                                {availableFields.map(field => (
+                                    <option key={`${field.formId}_${field.fieldId}`} value={`${field.formId}_${field.fieldId}`}>
+                                        {field.formName}.{field.fieldName}
+                                    </option>
+                                ))}
+                            </select>
+                            <Button size="sm" variant="danger" onClick={() => removeAggregation(agg.id)}>
+                                <Trash2 className="w-4 h-4" />
+                            </Button>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* 计算字段 */}
+            <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                    <h3 className="text-lg font-semibold text-gray-700">4. 计算字段（字段间运算）</h3>
+                    <Button size="sm" variant="outline" onClick={addCalculation}>
+                        <Plus className="w-4 h-4 mr-1" /> 添加
+                    </Button>
+                </div>
+                <div className="space-y-3">
+                    {calculations.map(calc => (
+                        <div key={calc.id} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                            <div className="flex items-center space-x-2 mb-3">
+                                <input
+                                    type="text"
+                                    value={calc.name}
+                                    onChange={(e) => updateCalculation(calc.id, { name: e.target.value })}
+                                    placeholder="计算字段名称"
+                                    className="w-40 px-2 py-1 border rounded text-sm"
+                                />
+                                <Button size="sm" variant="danger" onClick={() => removeCalculation(calc.id)}>
+                                    <Trash2 className="w-4 h-4" />
+                                </Button>
+                            </div>
+                            
+                            {/* 表达式显示 */}
+                            <div className="mb-3 p-2 bg-white border rounded text-sm font-mono min-h-[2rem] flex items-center">
+                                {calc.parts && calc.parts.length > 0 ? (
+                                    <div className="flex flex-wrap items-center gap-1">
+                                        {calc.parts.map((part, idx) => (
+                                            <span key={idx} className="px-2 py-1 rounded bg-blue-100 text-blue-800">
+                                                {part.type === 'field' 
+                                                    ? `${part.fieldName || part.fieldId}`
+                                                    : part.type === 'operator'
+                                                    ? part.value
+                                                    : part.value}
+                                            </span>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <span className="text-gray-400">表达式为空，请添加字段和运算符</span>
+                                )}
+                            </div>
+
+                            {/* 构建表达式的控件 */}
+                            <div className="space-y-2">
+                                <div className="flex items-center space-x-2">
+                                    <select
+                                        value=""
+                                        onChange={(e) => {
+                                            if (e.target.value) {
+                                                const field = availableFields.find(f => `${f.formId}_${f.fieldId}` === e.target.value);
+                                                if (field) {
+                                                    addFieldToCalculation(calc.id, field);
+                                                }
+                                                e.target.value = ''; // 重置选择
+                                            }
+                                        }}
+                                        className="flex-1 px-2 py-1 border rounded text-sm"
+                                    >
+                                        <option value="">选择字段...</option>
+                                        {availableFields.map(field => (
+                                            <option key={`${field.formId}_${field.fieldId}`} value={`${field.formId}_${field.fieldId}`}>
+                                                {field.formName}.{field.fieldName}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <select
+                                        value=""
+                                        onChange={(e) => {
+                                            if (e.target.value) {
+                                                addOperatorToCalculation(calc.id, e.target.value);
+                                                e.target.value = ''; // 重置选择
+                                            }
+                                        }}
+                                        className="px-2 py-1 border rounded text-sm"
+                                    >
+                                        <option value="">运算符...</option>
+                                        <option value="+">+ (加)</option>
+                                        <option value="-">- (减)</option>
+                                        <option value="*">* (乘)</option>
+                                        <option value="/">/ (除)</option>
+                                    </select>
+                                    <input
+                                        type="number"
+                                        placeholder="数字"
+                                        className="w-24 px-2 py-1 border rounded text-sm"
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && e.target.value) {
+                                                addNumberToCalculation(calc.id, e.target.value);
+                                                e.target.value = '';
+                                            }
+                                        }}
+                                    />
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                    <Button 
+                                        size="sm" 
+                                        variant="outline" 
+                                        onClick={() => removeLastPartFromCalculation(calc.id)}
+                                        disabled={!calc.parts || calc.parts.length === 0}
+                                    >
+                                        删除最后一项
+                                    </Button>
+                                    <Button 
+                                        size="sm" 
+                                        variant="outline" 
+                                        onClick={() => clearCalculationExpression(calc.id)}
+                                        disabled={!calc.parts || calc.parts.length === 0}
+                                    >
+                                        清空表达式
+                                    </Button>
+                                    {calc.expression && (
+                                        <span className="text-xs text-gray-500 ml-2">
+                                            表达式: {calc.expression}
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* 操作按钮 */}
+            <div className="flex justify-end space-x-3 pt-4 border-t">
+                <Button variant="outline" onClick={handleExecute} disabled={isExecuting}>
+                    <Play className="w-4 h-4 mr-2" />
+                    {isExecuting ? '执行中...' : '预览执行'}
+                </Button>
+                <Button variant="primary" onClick={handleSave} disabled={isSaving}>
+                    <Save className="w-4 h-4 mr-2" />
+                    {isSaving ? '保存中...' : '保存报表'}
+                </Button>
+            </div>
+
+            {/* 执行结果 */}
+            {executionResult && (
+                <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                    <h4 className="font-semibold mb-2">执行结果</h4>
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                            <thead className="bg-gray-100">
+                                <tr>
+                                    {Object.keys(executionResult.data[0] || {}).map(key => (
+                                        <th key={key} className="px-4 py-2 text-left text-xs font-medium text-gray-700">
+                                            {key}
+                                        </th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-200">
+                                {executionResult.data.map((row, idx) => (
+                                    <tr key={idx}>
+                                        {Object.values(row).map((value, i) => (
+                                            <td key={i} className="px-4 py-2 text-sm text-gray-900">
+                                                {value}
+                                            </td>
+                                        ))}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
+            {/* 保存成功模态框 */}
+            {saveModal.isOpen && (
+                <Modal isOpen={saveModal.isOpen} onClose={saveModal.close} title={saveModal.props.title}>
+                    <p className="text-gray-600">{saveModal.props.description}</p>
+                    <div className="mt-6 flex justify-end">
+                        <Button variant="primary" onClick={saveModal.props.onConfirm}>确定</Button>
+                    </div>
+                </Modal>
+            )}
+        </div>
+    );
+}

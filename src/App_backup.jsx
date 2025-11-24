@@ -106,8 +106,8 @@ const RefreshCw = ({ className }) => (
 );
 
 // --- LocalStorage Setup ---
-const LOCAL_STORAGE_KEY = 'ASSET_MANAGER_V2_DATA';
-const CURRENT_USER_ID_KEY = 'ASSET_MANAGER_CURRENT_USER_ID';
+const LOCAL_STORAGE_KEY = 'asset_manager_V2_DATA';
+const CURRENT_USER_ID_KEY = 'asset_manager_CURRENT_USER_ID';
 
 /** Generates a simple unique ID */
 const generateId = () => Date.now().toString(36) + Math.random().toString(36).substring(2);

@@ -14,7 +14,7 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
   const [viewMode, setViewMode] = useState('cards'); // 'cards' or 'table'
 
   const subAccounts = useMemo(() => {
-    return allAppUsers.filter(u => u.role === 'subaccount');
+    return allAppUsers.filter(u => u.role === 'base_handler');
   }, [allAppUsers]);
   
   // 创建用户ID到用户名的映射
@@ -111,22 +111,24 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
                  ))}
                </select>
              </div>
-            <div className="max-w-xs w-full">
-               <label htmlFor="subaccount-filter" className="block text-sm font-medium text-gray-700 mb-1">
-                 筛选提交人
-               </label>
-               <select
-                 id="subaccount-filter"
-                 value={selectedSubAccountId}
-                 onChange={(e) => setSelectedSubAccountId(e.target.value)}
-                 className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md shadow-sm"
-               >
-                 <option value="all">所有子账号</option>
-                 {subAccounts.map(sub => (
-                   <option key={sub.id} value={sub.id}>{sub.name}</option>
-                 ))}
-               </select>
-             </div>
+            {subAccounts.length > 0 && (
+              <div className="max-w-xs w-full">
+                 <label htmlFor="subaccount-filter" className="block text-sm font-medium text-gray-700 mb-1">
+                   筛选提交人
+                 </label>
+                 <select
+                   id="subaccount-filter"
+                   value={selectedSubAccountId}
+                   onChange={(e) => setSelectedSubAccountId(e.target.value)}
+                   className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md shadow-sm"
+                 >
+                   <option value="all">所有经手人</option>
+                   {subAccounts.map(sub => (
+                     <option key={sub.id} value={sub.id}>{sub.name}</option>
+                   ))}
+                 </select>
+               </div>
+            )}
         </div>
 
         {/* 内容区域 */}
@@ -170,7 +172,31 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredAssets.map(asset => {
-                  const submittedDate = new Date(asset.submittedAt).toLocaleString('zh-CN');
+                  // 处理时间戳：支持毫秒时间戳和日期字符串
+                  let submittedDate = 'N/A';
+                  if (asset.submittedAt) {
+                      try {
+                          const timestamp = typeof asset.submittedAt === 'number' 
+                              ? asset.submittedAt 
+                              : parseInt(asset.submittedAt);
+                          
+                          if (!isNaN(timestamp) && timestamp > 0) {
+                              const date = new Date(timestamp);
+                              if (!isNaN(date.getTime())) {
+                                  submittedDate = date.toLocaleString('zh-CN', {
+                                      year: 'numeric',
+                                      month: '2-digit',
+                                      day: '2-digit',
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                  });
+                              }
+                          }
+                      } catch (e) {
+                          console.error('日期解析错误:', e, asset.submittedAt);
+                      }
+                  }
+                  
                   const submitterName = userIdToName[asset.subAccountId] || asset.subAccountName || '未知';
                   const formName = formIdToName[asset.formId] || asset.formName || '未知表格';
                   const recordCount = asset.batchData?.length || 0;

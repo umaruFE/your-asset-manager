@@ -2,6 +2,8 @@ import React, { useState, useCallback, useMemo } from 'react';
 import { Settings, Users, Plus, Trash2, ChevronDown, Loader, ArrowUp, ArrowDown, GripVertical } from 'lucide-react';
 import { Button, Modal, useModal, InputGroup, Dropdown, LoadingScreen } from '../utils/UI';
 import { generateId } from '../utils/helpers';
+import { formsAPI } from '../utils/api';
+import UserManagementPanel from './UserManagementPanel';
 
 // 3a. 管理表格模板 (ManageFormsPanel)
 function ManageFormsPanel({ getCollectionHook, onEditFields }) {
@@ -9,7 +11,13 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
     const [newFormName, setNewFormName] = useState('');
     const [actionError, setActionError] = useState(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [updatingFormId, setUpdatingFormId] = useState(null); // 正在更新的表单ID
     const confirmModal = useModal();
+    
+    // 直接设置数据，避免触发useAPI的更新逻辑
+    const setFormsData = useCallback((newForms) => {
+        updateForms(() => newForms);
+    }, [updateForms]);
     
     // Add new form
     const handleAddForm = (e) => {
@@ -40,12 +48,27 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
     };
     
     // Toggle Active Status
-    const toggleFormStatus = (form) => {
-        updateForms(prevForms => prevForms.map(f => 
-            f.id === form.id
-            ? { ...f, isActive: !f.isActive }
-            : f
-        ));
+    const toggleFormStatus = async (form) => {
+        setUpdatingFormId(form.id);
+        setActionError(null);
+        
+        try {
+            const newIsActive = !form.isActive;
+            // 直接调用API更新单个表单
+            await formsAPI.update(form.id, {
+                name: form.name,
+                isActive: newIsActive
+            });
+            
+            // 重新加载所有表单数据，并使用特殊标记避免重复API调用
+            const updatedForms = await formsAPI.getAll();
+            // 使用特殊方式更新，避免触发useAPI的批量更新逻辑
+            setFormsData(updatedForms);
+        } catch (err) {
+            setActionError(err.message || "更新表单状态失败");
+        } finally {
+            setUpdatingFormId(null);
+        }
     };
 
     // Confirm Delete
@@ -109,8 +132,20 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
                                 <Button size="sm" variant="outline" onClick={() => onEditFields(form.id)}>
                                     <Settings className="w-4 h-4 mr-1" /> 编辑字段
                                 </Button>
-                                <Button size="sm" variant={form.isActive ? 'outline' : 'primary'} onClick={() => toggleFormStatus(form)}>
-                                    {form.isActive ? '禁用' : '激活'}
+                                <Button 
+                                    size="sm" 
+                                    variant={form.isActive ? 'outline' : 'primary'} 
+                                    onClick={() => toggleFormStatus(form)}
+                                    disabled={updatingFormId === form.id}
+                                >
+                                    {updatingFormId === form.id ? (
+                                        <>
+                                            <Loader className="w-4 h-4 mr-1 animate-spin" />
+                                            处理中...
+                                        </>
+                                    ) : (
+                                        form.isActive ? '禁用' : '激活'
+                                    )}
                                 </Button>
                                 <Button size="sm" variant="danger" onClick={() => openDeleteConfirm(form)}>
                                     <Trash2 className="w-4 h-4" />
@@ -136,13 +171,17 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
 }
 
 // 3b. 管理表单字段 (ManageFormFieldsPanel)
-function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
-    const { update: updateForms } = getCollectionHook('forms');
+function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }) {
+    const { data: forms, update: updateForms } = getCollectionHook('forms');
+    
+    // 从最新的表单列表中获取当前表单（确保数据同步）
+    const form = forms.find(f => f.id === initialForm.id) || initialForm;
     const [newFieldName, setNewFieldName] = useState('');
     const [newFieldType, setNewFieldType] = useState('text');
     const [newFieldFormula, setNewFieldFormula] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [actionError, setActionError] = useState(null);
+    const [updatingFieldId, setUpdatingFieldId] = useState(null); // 正在更新的字段ID
     const confirmModal = useModal();
     
     // For drag and drop
@@ -219,14 +258,25 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
         }
     };
     
-    const toggleFieldStatus = (field) => {
+    const toggleFieldStatus = async (field) => {
         const newStatus = !field.active;
-        const newFields = form.fields.map(f => 
-            f.id === field.id
-            ? { ...f, active: newStatus, history: [...(f.history || []), { status: newStatus ? "activated" : "archived", timestamp: Date.now() }] }
-            : f
-        );
-        updateFormFields(newFields);
+        setUpdatingFieldId(field.id);
+        setActionError(null);
+        
+        try {
+            // 调用API更新字段状态
+            await formsAPI.updateField(form.id, field.id, {
+                active: newStatus
+            });
+            
+            // 重新加载所有表单数据以确保同步
+            const updatedForms = await formsAPI.getAll();
+            updateForms(() => updatedForms);
+        } catch (err) {
+            setActionError(err.message || "更新字段状态失败");
+        } finally {
+            setUpdatingFieldId(null);
+        }
     };
     
     const openDeleteConfirm = (field) => {
@@ -499,8 +549,16 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
                                             variant={field.active ? "outline" : "primary"}
                                             onClick={() => toggleFieldStatus(field)}
                                             size="sm"
+                                            disabled={updatingFieldId === field.id}
                                         >
-                                            {field.active ? "删除/归档" : "重新激活"}
+                                            {updatingFieldId === field.id ? (
+                                                <>
+                                                    <Loader className="w-4 h-4 mr-1 animate-spin" />
+                                                    处理中...
+                                                </>
+                                            ) : (
+                                                field.active ? "删除/归档" : "重新激活"
+                                            )}
                                         </Button>
                                         {/* {field.active && (
                                             <Button
@@ -533,45 +591,6 @@ function ManageFormFieldsPanel({ form, getCollectionHook, onClose }) {
     );
 }
 
-// 3c. 管理所有用户 (ManageUsersPanel)
-function ManageUsersPanel({ user, getCollectionHook }) {
-  const { data: allAppUsers, loading, error } = getCollectionHook('allAppUsers');
-  
-  if (loading) {
-    return <LoadingScreen message="正在加载所有用户..." />;
-  }
-  if (error) {
-    return <div className="text-red-500">加载用户失败: {error}</div>;
-  }
-  
-  return (
-    <div className="p-6 bg-white rounded-xl shadow-lg">
-      <h2 className="text-2xl font-semibold text-gray-800 mb-4">系统所有用户</h2>
-      
-      <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">用户名</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">角色</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">用户 ID (id)</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {allAppUsers.map(u => (
-              <tr key={u.id}>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{u.name}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{u.role}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">{u.id}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
 // Main SuperAdminPanel component
 function SuperAdminPanel({ user, getCollectionHook }) {
   const [activeTab, setActiveTab] = useState('manageForms');
@@ -601,7 +620,7 @@ function SuperAdminPanel({ user, getCollectionHook }) {
       <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
       <div className="mt-6">
         {activeTab === 'manageForms' && <ManageFormsPanel user={user} getCollectionHook={getCollectionHook} onEditFields={setEditingFormId} />}
-        {activeTab === 'manageUsers' && <ManageUsersPanel user={user} getCollectionHook={getCollectionHook} />}
+        {activeTab === 'manageUsers' && <UserManagementPanel getCollectionHook={getCollectionHook} />}
       </div>
     </div>
   );
