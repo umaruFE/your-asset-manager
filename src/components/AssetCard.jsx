@@ -30,11 +30,13 @@ export default function AssetCard({ asset, onClick }) {
         }
     }
     
-    const recordCount = asset.batchData?.length || 0;
+    // 支持 batchData (camelCase) 和 batch_data (snake_case)
+    const batchData = asset.batchData || asset.batch_data || [];
+    const recordCount = batchData?.length || 0;
     
     // Find the first non-formula/non-textarea field to use as the title
     const titleField = asset.fieldsSnapshot?.find(f => f.type !== 'formula' && f.type !== 'textarea') || asset.fieldsSnapshot?.[0]; 
-    const firstRecord = asset.batchData?.[0] || {};
+    const firstRecord = batchData?.[0] || {};
     
     // 支持字段ID和字段名称两种格式
     let title = asset.formName || '记录';
@@ -118,22 +120,25 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
       }, {});
   }, [asset.fieldsSnapshot]);
   
+  // 支持 batchData (camelCase) 和 batch_data (snake_case)
+  const batchData = asset.batchData || asset.batch_data || [];
+  
   // 获取所有在快照中出现过的字段 (用于表头)
   // 支持两种格式：字段ID作为键，或字段名称作为键
   const allFieldKeysInBatch = React.useMemo(() => {
-      if (!asset.batchData || !Array.isArray(asset.batchData) || asset.batchData.length === 0) {
+      if (!batchData || !Array.isArray(batchData) || batchData.length === 0) {
           return [];
       }
       
       const keySet = new Set();
-      asset.batchData.forEach(row => {
+      batchData.forEach(row => {
         if (row && typeof row === 'object') {
             Object.keys(row).forEach(key => keySet.add(key));
         }
       });
       
       // 判断batchData中的键是字段ID还是字段名称
-      const firstRow = asset.batchData[0];
+      const firstRow = batchData[0];
       const firstKey = firstRow ? Object.keys(firstRow)[0] : null;
       const isUsingFieldNames = firstKey && fieldNameToId[firstKey]; // 如果第一个键能在名称映射中找到，说明使用的是字段名称
       
@@ -154,7 +159,7 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
       
       // 如果没有快照，返回所有在数据中出现的键
       return Array.from(keySet);
-  }, [asset.batchData, asset.fieldsSnapshot, fieldNameToId]);
+  }, [asset.batchData, asset.batch_data, asset.fieldsSnapshot, fieldNameToId]);
 
   return (
     <div className={`fixed inset-0 z-50 overflow-y-auto ${isOpen ? 'block' : 'hidden'}`}>
@@ -187,7 +192,7 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
                       </p>
                   )}
                   
-                  {allFieldKeysInBatch.length > 0 && asset.batchData && asset.batchData.length > 0 ? (
+                  {allFieldKeysInBatch.length > 0 && batchData && batchData.length > 0 ? (
                     <div className="overflow-x-auto border border-gray-200 rounded-lg mt-4">
                       <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
@@ -204,7 +209,7 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
-                          {asset.batchData.map((row, rowIndex) => (
+                          {batchData.map((row, rowIndex) => (
                             <tr key={rowIndex}>
                               {allFieldKeysInBatch.map(fieldKey => (
                                 <td key={fieldKey} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
@@ -219,7 +224,7 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
                   ) : (
                     <div className="mt-4 p-4 bg-gray-50 rounded-lg text-center text-gray-500">
                       <p>暂无数据</p>
-                      {(!asset.batchData || asset.batchData.length === 0) && (
+                      {(!batchData || batchData.length === 0) && (
                         <p className="text-sm mt-2">该记录没有包含任何数据</p>
                       )}
                       {(!asset.fieldsSnapshot || asset.fieldsSnapshot.length === 0) && (

@@ -226,6 +226,28 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
         // 检查是否有聚合函数（需要在构建字段之前检查）
         const hasAggregations = aggregations && aggregations.length > 0;
         
+        // 确定哪些字段用于分组（非聚合字段，且不是数字类型或不是聚合目标）
+        // 用于分组的字段通常是文本类型字段，如"鱼类品种"
+        const groupByFieldIds = new Set();
+        if (hasAggregations && selectedFields && selectedFields.length > 0) {
+            // 获取所有被聚合的字段ID
+            const aggregatedFieldIds = new Set();
+            if (aggregations && aggregations.length > 0) {
+                aggregations.forEach(agg => {
+                    if (agg.fieldId) {
+                        aggregatedFieldIds.add(agg.fieldId);
+                    }
+                });
+            }
+            
+            // 只有未被聚合的字段才用于分组
+            selectedFields.forEach(field => {
+                if (field.formId && field.fieldId && !aggregatedFieldIds.has(field.fieldId)) {
+                    groupByFieldIds.add(field.fieldId);
+                }
+            });
+        }
+        
         // 添加选择的字段（从batch_data JSONB中提取）
         // 支持字段ID和字段名称两种格式
         for (const field of selectedFields || []) {
@@ -265,29 +287,45 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             }
         }
 
-        // 添加计算字段
-        for (const calc of calculations || []) {
-            if (calc.expression) {
-                // 计算表达式，需要替换字段ID为JSONB路径
-                let expr = calc.expression;
-                // 替换字段ID为JSONB路径表达式
-                // 假设表达式格式为: "fieldId1 + fieldId2" 或 "fieldId1 * 100"
-                const fieldIdPattern = /(\w+)/g;
-                expr = expr.replace(fieldIdPattern, (match) => {
-                    // 检查是否是运算符或数字
-                    if (['+', '-', '*', '/', '(', ')'].includes(match) || !isNaN(match)) {
-                        return match;
-                    }
-                    // 否则是字段ID，转换为JSONB路径
-                    // 尝试字段ID，如果不存在则尝试字段名称
-                    const fieldName = fieldNameMap[match] || match;
-                    if (hasAggregations) {
-                        return `CAST(COALESCE(batch_row->>'${match}', batch_row->>'${fieldName}') AS NUMERIC)`;
-                    } else {
-                        return `CAST(COALESCE(batch_data->0->>'${match}', batch_data->0->>'${fieldName}') AS NUMERIC)`;
-                    }
-                });
-                selectClauses.push(`(${expr}) as "${calc.name}"`);
+        // 创建聚合字段映射：fieldId -> 聚合列名（例如 "转入重量 (kg)_SUM"）
+        const aggregationColumnMap = {};
+        if (hasAggregations && aggregations) {
+            for (const agg of aggregations) {
+                if (agg.formId && agg.fieldId && agg.function) {
+                    const func = agg.function.toUpperCase();
+                    const fieldName = agg.fieldName || agg.fieldId;
+                    aggregationColumnMap[agg.fieldId] = `${fieldName}_${func}`;
+                }
+            }
+        }
+        
+        // 如果有聚合函数且有计算字段，计算字段需要在子查询的外层处理
+        // 否则，计算字段可以直接添加到selectClauses中
+        const hasCalculations = calculations && calculations.length > 0;
+        const needsSubquery = hasAggregations && hasCalculations;
+        
+        if (!needsSubquery) {
+            // 没有聚合函数，或者有聚合函数但没有计算字段，可以直接添加计算字段
+            for (const calc of calculations || []) {
+                if (calc.expression) {
+                    // 计算表达式，需要替换字段ID为JSONB路径
+                    let expr = calc.expression;
+                    const fieldIdPattern = /(\w+)/g;
+                    expr = expr.replace(fieldIdPattern, (match) => {
+                        // 检查是否是运算符或数字
+                        if (['+', '-', '*', '/', '(', ')'].includes(match) || !isNaN(match)) {
+                            return match;
+                        }
+                        // 否则是普通字段，转换为JSONB路径
+                        const fieldName = fieldNameMap[match] || match;
+                        if (hasAggregations) {
+                            return `CAST(COALESCE(batch_row->>'${match}', batch_row->>'${fieldName}') AS NUMERIC)`;
+                        } else {
+                            return `CAST(COALESCE(batch_data->0->>'${match}', batch_data->0->>'${fieldName}') AS NUMERIC)`;
+                        }
+                    });
+                    selectClauses.push(`(${expr}) as "${calc.name}"`);
+                }
             }
         }
 
@@ -301,9 +339,123 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
         const hasNonAggregatedFields = selectedFields && selectedFields.length > 0;
         
         // 构建基础查询
-        // 如果使用聚合函数，需要展开batch_data并分组
+        // 如果使用聚合函数且有计算字段，需要使用子查询（因为PostgreSQL不允许在同一SELECT中引用列别名）
         let query;
-        if (hasAggregations) {
+        if (needsSubquery) {
+            // 构建内层查询（聚合查询，不包含计算字段）
+            // 只选择用于分组的字段和聚合字段，不选择其他非聚合字段
+            const innerSelectClauses = [];
+            
+            // 只添加用于分组的字段（非聚合字段）
+            for (const field of selectedFields || []) {
+                if (field.formId && field.fieldId && groupByFieldIds.has(field.fieldId)) {
+                    const fieldId = field.fieldId;
+                    const fieldName = field.fieldName || fieldId;
+                    innerSelectClauses.push(`COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') as "${fieldName}"`);
+                }
+            }
+            
+            // 添加所有聚合字段
+            for (const agg of aggregations || []) {
+                if (agg.formId && agg.fieldId && agg.function) {
+                    const func = agg.function.toUpperCase();
+                    const fieldId = agg.fieldId;
+                    const fieldName = agg.fieldName || fieldId;
+                    
+                    if (func === 'COUNT') {
+                        innerSelectClauses.push(`${func}(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')) as "${agg.fieldName}_${func}"`);
+                    } else {
+                        innerSelectClauses.push(`${func}(CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC)) as "${agg.fieldName}_${func}"`);
+                    }
+                }
+            }
+            
+            let innerQuery = `SELECT ${innerSelectClauses.join(', ')} FROM assets, jsonb_array_elements(batch_data) as batch_row WHERE 1=1`;
+                
+                // 添加表单过滤（在GROUP BY之前）
+                if (selectedForms && selectedForms.length > 0) {
+                    innerQuery += ` AND form_id = ANY($${paramIndex++}::text[])`;
+                    queryParams.push(selectedForms);
+                }
+
+                // 添加基地过滤（在GROUP BY之前）
+                if (req.user.role === 'base_manager' && req.user.baseId) {
+                    innerQuery += ` AND base_id = $${paramIndex++}`;
+                    queryParams.push(req.user.baseId);
+                }
+                
+                // 如果有非聚合字段，需要添加GROUP BY（必须在WHERE之后）
+                // 只对用于分组的字段进行GROUP BY（不包括被聚合的字段）
+                if (groupByFieldIds.size > 0) {
+                    const groupByFields = selectedFields
+                        .filter(field => field && typeof field === 'object' && field.formId && field.fieldId && groupByFieldIds.has(field.fieldId))
+                        .map(field => {
+                            const fieldId = field.fieldId;
+                            const fieldName = field.fieldName || fieldId;
+                            return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
+                        });
+                    
+                    if (groupByFields.length > 0) {
+                        innerQuery += ` GROUP BY ${groupByFields.join(', ')}`;
+                    }
+                }
+                
+                // 构建外层查询（计算字段查询）
+                // 使用 subq 作为子查询别名（避免使用 inner 关键字）
+                const outerSelectClauses = [];
+                
+                // 只添加内层查询中实际存在的列：
+                // 1. 用于分组的字段（非聚合字段）
+                for (const field of selectedFields || []) {
+                    if (field.formId && field.fieldId && groupByFieldIds.has(field.fieldId)) {
+                        const fieldName = field.fieldName || field.fieldId;
+                        // 使用双引号包裹列名，确保特殊字符正确处理
+                        const escapedFieldName = fieldName.replace(/"/g, '""'); // 转义双引号
+                        outerSelectClauses.push(`subq."${escapedFieldName}"`);
+                    }
+                }
+                
+                // 2. 所有聚合列
+                for (const agg of aggregations || []) {
+                    if (agg.formId && agg.fieldId && agg.function) {
+                        const func = agg.function.toUpperCase();
+                        const fieldName = agg.fieldName || agg.fieldId;
+                        const aggColName = `${fieldName}_${func}`;
+                        const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
+                        outerSelectClauses.push(`subq."${escapedColName}"`);
+                    }
+                }
+                
+                // 添加计算字段（使用内层查询的列名）
+                for (const calc of calculations || []) {
+                    if (calc.expression) {
+                        let expr = calc.expression;
+                        // 替换字段ID为内层查询的列名引用
+                        const fieldIdPattern = /(\w+)/g;
+                        expr = expr.replace(fieldIdPattern, (match) => {
+                            // 检查是否是运算符或数字
+                            if (['+', '-', '*', '/', '(', ')'].includes(match) || !isNaN(match)) {
+                                return match;
+                            }
+                            // 如果该字段有聚合函数，使用聚合列名
+                            if (aggregationColumnMap[match]) {
+                                const aggColName = aggregationColumnMap[match].replace(/"/g, ''); // 移除引号
+                                const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
+                                return `subq."${escapedColName}"`;
+                            }
+                            // 否则使用普通字段名
+                            const fieldName = fieldNameMap[match] || match;
+                            const escapedFieldName = fieldName.replace(/"/g, '""'); // 转义双引号
+                            return `subq."${escapedFieldName}"`;
+                        });
+                        const escapedCalcName = calc.name.replace(/"/g, '""'); // 转义双引号
+                        outerSelectClauses.push(`(${expr}) as "${escapedCalcName}"`);
+                    }
+                }
+                
+                query = `SELECT ${outerSelectClauses.join(', ')} FROM (${innerQuery}) as subq`;
+        } else if (hasAggregations) {
+            // 有聚合函数但没有计算字段，直接使用聚合查询
             query = `SELECT ${selectClauses.join(', ')} FROM assets, jsonb_array_elements(batch_data) as batch_row WHERE 1=1`;
             
             // 添加表单过滤（在GROUP BY之前）
@@ -319,11 +471,10 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             }
             
             // 如果有非聚合字段，需要添加GROUP BY（必须在WHERE之后）
-            if (hasNonAggregatedFields) {
-                // 对于非聚合字段，需要从batch_row中提取
-                // 支持字段ID和字段名称两种格式
+            // 只对用于分组的字段进行GROUP BY（不包括被聚合的字段）
+            if (groupByFieldIds.size > 0) {
                 const groupByFields = selectedFields
-                    .filter(field => field && typeof field === 'object' && field.formId && field.fieldId)
+                    .filter(field => field && typeof field === 'object' && field.formId && field.fieldId && groupByFieldIds.has(field.fieldId))
                     .map(field => {
                         const fieldId = field.fieldId;
                         const fieldName = field.fieldName || fieldId;

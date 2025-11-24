@@ -377,7 +377,6 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
         setIsExecuting(true);
         try {
-            // 先保存临时报表
             const config = {
                 selectedForms,
                 selectedFields,
@@ -386,18 +385,38 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                 filters: {}
             };
 
-            const tempReport = await reportsAPI.create({
-                name: `临时报表_${Date.now()}`,
-                description: '临时执行报表',
-                config
-            });
+            let reportId;
+            // 如果正在编辑报表，使用现有报表ID；否则创建临时报表
+            if (editingReport && editingReport.id) {
+                // 先更新报表配置
+                await reportsAPI.update(editingReport.id, {
+                    name: reportName || editingReport.name,
+                    description: reportDescription || editingReport.description,
+                    config
+                });
+                reportId = editingReport.id;
+            } else {
+                // 创建临时报表
+                const tempReport = await reportsAPI.create({
+                    name: `临时报表_${Date.now()}`,
+                    description: '临时执行报表',
+                    config
+                });
+                reportId = tempReport.id;
+            }
 
             // 执行报表
-            const result = await reportsAPI.execute(tempReport.id);
+            const result = await reportsAPI.execute(reportId);
             setExecutionResult(result);
 
-            // 删除临时报表
-            await reportsAPI.delete(tempReport.id);
+            // 如果是临时报表，删除它
+            if (!editingReport || !editingReport.id) {
+                try {
+                    await reportsAPI.delete(reportId);
+                } catch (deleteError) {
+                    console.warn('删除临时报表失败:', deleteError);
+                }
+            }
         } catch (error) {
             // 尝试解析错误响应
             let errorMessage = error.message || '执行失败';

@@ -35,15 +35,18 @@ export function useAPI() {
                                 result = await usersAPI.getAll();
                             } catch (err) {
                                 // 如果不是超级管理员，尝试获取基地经手人列表（基地负责人）
-                                if (err.message.includes('Insufficient permissions') || err.message.includes('403')) {
+                                if (err.message.includes('Insufficient permissions') || err.message.includes('403') || err.message.includes('Access denied')) {
                                     try {
                                         result = await usersAPI.getMyBaseHandlers();
                                     } catch (err2) {
-                                        // 如果都失败，返回空数组
+                                        // 如果都失败，返回空数组（不抛出错误，避免阻塞UI）
+                                        console.warn('无法获取用户列表:', err2.message);
                                         result = [];
                                     }
                                 } else {
-                                    throw err;
+                                    // 其他错误也返回空数组，避免阻塞UI
+                                    console.warn('获取用户列表失败:', err.message);
+                                    result = [];
                                 }
                             }
                             break;

@@ -6,7 +6,7 @@ import { Grid, List } from 'lucide-react';
 
 export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
   const { data: assets, loading: assetsLoading, error: assetsError } = getCollectionHook('assets');
-  const { data: allAppUsers, loading: usersLoading, error: usersError } = getCollectionHook('allAppUsers');
+  const { data: allAppUsers = [], loading: usersLoading, error: usersError } = getCollectionHook('allAppUsers');
   const { data: forms } = getCollectionHook('forms');
   
   const [selectedFormId, setSelectedFormId] = useState('all');
@@ -14,11 +14,13 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
   const [viewMode, setViewMode] = useState('cards'); // 'cards' or 'table'
 
   const subAccounts = useMemo(() => {
+    if (!allAppUsers || !Array.isArray(allAppUsers)) return [];
     return allAppUsers.filter(u => u.role === 'base_handler');
   }, [allAppUsers]);
   
   // 创建用户ID到用户名的映射
   const userIdToName = useMemo(() => {
+    if (!allAppUsers || !Array.isArray(allAppUsers)) return {};
     return allAppUsers.reduce((acc, user) => {
       acc[user.id] = user.name;
       return acc;
@@ -199,7 +201,8 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
                   
                   const submitterName = userIdToName[asset.subAccountId] || asset.subAccountName || '未知';
                   const formName = formIdToName[asset.formId] || asset.formName || '未知表格';
-                  const recordCount = asset.batchData?.length || 0;
+                  // 支持 batchData (camelCase) 和 batch_data (snake_case)
+                  const recordCount = (asset.batchData || asset.batch_data || [])?.length || 0;
                   
                   return (
                     <tr key={asset.id} className="hover:bg-gray-50">
