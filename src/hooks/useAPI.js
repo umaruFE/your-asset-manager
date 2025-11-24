@@ -36,6 +36,7 @@ export function useAPI() {
                                 console.log('[useAPI] 尝试 getAll()...');
                                 result = await usersAPI.getAll();
                                 console.log('[useAPI] getAll() 成功，获取到', result?.length || 0, '个用户');
+                                error = null; // 成功时清除错误
                             } catch (err) {
                                 console.log('[useAPI] getAll() 失败，错误:', err.message, '状态:', err.response?.status);
                                 // 如果不是超级管理员，尝试获取基地经手人列表
@@ -44,6 +45,7 @@ export function useAPI() {
                                     console.log('[useAPI] 尝试 getMyBaseHandlers()...');
                                     result = await usersAPI.getMyBaseHandlers();
                                     console.log('[useAPI] getMyBaseHandlers() 成功，获取到', result?.length || 0, '个用户');
+                                    error = null; // 成功时清除错误
                                 } catch (err2) {
                                     // 如果都失败，返回空数组（不抛出错误，避免阻塞UI）
                                     console.warn('[useAPI] getMyBaseHandlers() 也失败:', {
@@ -54,6 +56,7 @@ export function useAPI() {
                                         fullError: err2
                                     }, '使用空数组');
                                     result = [];
+                                    error = null; // 即使失败也清除错误，因为我们已经处理了（返回空数组）
                                 }
                             }
                             break;
