@@ -102,7 +102,7 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
       }
       return asset.fieldsSnapshot.reduce((acc, field) => {
         if (field && field.id && field.name) {
-            acc[field.id] = field.name;
+        acc[field.id] = field.name;
         }
         return acc;
       }, {});
@@ -151,7 +151,7 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
                 .filter(name => name && keySet.has(name));
           } else {
               // 如果使用字段ID，返回字段ID列表
-              return asset.fieldsSnapshot
+      return asset.fieldsSnapshot
                 .map(f => f?.id)
                 .filter(id => id && keySet.has(id));
           }
@@ -193,34 +193,34 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
                   )}
                   
                   {allFieldKeysInBatch.length > 0 && batchData && batchData.length > 0 ? (
-                    <div className="overflow-x-auto border border-gray-200 rounded-lg mt-4">
-                      <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                          <tr>
+                  <div className="overflow-x-auto border border-gray-200 rounded-lg mt-4">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
                             {allFieldKeysInBatch.map(fieldKey => {
                               // fieldKey可能是字段ID或字段名称
                               const fieldName = fieldIdToName[fieldKey] || fieldKey; // 如果是ID，转换为名称；如果是名称，直接使用
                               return (
                                 <th key={fieldKey} scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                   {fieldName || '未知字段'}
-                                </th>
+                            </th>
                               );
                             })}
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
                           {batchData.map((row, rowIndex) => (
-                            <tr key={rowIndex}>
+                          <tr key={rowIndex}>
                               {allFieldKeysInBatch.map(fieldKey => (
                                 <td key={fieldKey} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
                                   {row[fieldKey] !== undefined && row[fieldKey] !== null ? String(row[fieldKey]) : 'N/A'}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                   ) : (
                     <div className="mt-4 p-4 bg-gray-50 rounded-lg text-center text-gray-500">
                       <p>暂无数据</p>

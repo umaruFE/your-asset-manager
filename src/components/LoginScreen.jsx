@@ -63,14 +63,14 @@ export default function LoginScreen({ onLogin }) {
             />
           </InputGroup>
 
-          <Button
+            <Button
             type="submit"
             variant="primary"
             disabled={loading}
             className="w-full justify-center py-3"
-          >
+            >
             {loading ? '登录中...' : '登录'}
-          </Button>
+            </Button>
         </form>
 
         <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">

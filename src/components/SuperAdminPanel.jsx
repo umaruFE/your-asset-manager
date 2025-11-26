@@ -294,7 +294,7 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
         }
         confirmModal.close();
     };
-    
+
     // Drag and drop handlers
     const handleDragStart = (e, fieldId) => {
         setDraggedFieldId(fieldId);
@@ -561,13 +561,13 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
                                             )}
                                         </Button>
                                         {/* {field.active && (
-                                            <Button
-                                                variant="danger"
-                                                onClick={() => openDeleteConfirm(field)}
-                                                size="sm"
-                                            >
-                                                删除/归档
-                                            </Button>
+                                        <Button
+                                            variant="danger"
+                                            onClick={() => openDeleteConfirm(field)}
+                                            size="sm"
+                                        >
+                                            删除/归档
+                                        </Button>
                                         )} */}
                                     </td>
                                 </tr>
@@ -587,8 +587,8 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
                     </div>
                 </Modal>
             )}
-        </div>
-    );
+    </div>
+  );
 }
 
 // Main SuperAdminPanel component

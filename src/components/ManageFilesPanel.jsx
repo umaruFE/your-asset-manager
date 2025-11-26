@@ -128,43 +128,43 @@ export default function ManageFilesPanel({ user, getCollectionHook }) {
           
           {/* 子账号权限 */}
           {subAccounts.length > 0 && (
-            <div>
-              <h3 className="text-md font-medium text-gray-700 mb-2">
-                指定查看权限
-              </h3>
+          <div>
+            <h3 className="text-md font-medium text-gray-700 mb-2">
+              指定查看权限
+            </h3>
               {usersError && <div className="text-red-500 text-sm">加载经手人失败: {usersError}</div>}
-              
-              <div className="flex items-center justify-between mb-2">
-                 <label htmlFor="select-all" className="flex items-center text-sm text-gray-600">
-                   <input
-                     type="checkbox"
-                     id="select-all"
-                     checked={subAccounts.length > 0 && selectedAccounts.length === subAccounts.length}
-                     onChange={toggleSelectAll}
-                     className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                   />
-                   <span className="ml-2">全选</span>
-                 </label>
-                 <span className="text-sm text-gray-500">
-                   已选 {selectedAccounts.length} / {subAccounts.length}
-                 </span>
-              </div>
-              
-              <div className="max-h-60 overflow-y-auto border border-gray-200 rounded-md p-4 space-y-2">
-                {subAccounts.map(acc => (
-                  <label key={acc.id} htmlFor={`cb-${acc.id}`} className="flex items-center p-2 rounded-md hover:bg-gray-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      id={`cb-${acc.id}`}
-                      checked={selectedAccounts.includes(acc.id)}
-                      onChange={() => handleCheckboxChange(acc.id)}
-                      className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                    />
-                    <span className="ml-3 text-sm font-medium text-gray-800">{acc.name}</span>
-                  </label>
-                ))}
-              </div>
+            
+            <div className="flex items-center justify-between mb-2">
+               <label htmlFor="select-all" className="flex items-center text-sm text-gray-600">
+                 <input
+                   type="checkbox"
+                   id="select-all"
+                   checked={subAccounts.length > 0 && selectedAccounts.length === subAccounts.length}
+                   onChange={toggleSelectAll}
+                   className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                 />
+                 <span className="ml-2">全选</span>
+               </label>
+               <span className="text-sm text-gray-500">
+                 已选 {selectedAccounts.length} / {subAccounts.length}
+               </span>
             </div>
+            
+            <div className="max-h-60 overflow-y-auto border border-gray-200 rounded-md p-4 space-y-2">
+              {subAccounts.map(acc => (
+                <label key={acc.id} htmlFor={`cb-${acc.id}`} className="flex items-center p-2 rounded-md hover:bg-gray-50 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    id={`cb-${acc.id}`}
+                    checked={selectedAccounts.includes(acc.id)}
+                    onChange={() => handleCheckboxChange(acc.id)}
+                    className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <span className="ml-3 text-sm font-medium text-gray-800">{acc.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
           )}
           
           <Button type="submit" variant="primary" disabled={isUploading} className="w-full justify-center">
