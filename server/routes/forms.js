@@ -16,7 +16,7 @@ router.get('/', authenticateToken, async (req, res, next) => {
         // 其他角色只能看到激活的表单，并且需要通过权限表过滤
         if (req.user.role !== 'superadmin') {
             query += ' AND is_active = true';
-            
+
             // 所有非超级管理员角色都需要通过权限表过滤
             query += ` AND id IN (
                 SELECT form_id FROM user_form_permissions 
@@ -35,7 +35,7 @@ router.get('/', authenticateToken, async (req, res, next) => {
             const fieldsQuery = req.user.role === 'superadmin'
                 ? 'SELECT * FROM form_fields WHERE form_id = $1 ORDER BY "order" ASC'
                 : 'SELECT * FROM form_fields WHERE form_id = $1 AND active = true ORDER BY "order" ASC';
-            
+
             const fieldsResult = await pool.query(fieldsQuery, [form.id]);
             form.fields = fieldsResult.rows;
         }
@@ -71,11 +71,11 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
                 'SELECT can_view FROM user_form_permissions WHERE user_id = $1 AND form_id = $2',
                 [req.user.id, form.id]
             );
-            
+
             if (permResult.rows.length === 0 || !permResult.rows[0].can_view) {
                 return res.status(403).json({ error: 'Access denied: No permission to view this form' });
             }
-            
+
             // 非超级管理员只能查看激活的表单
             if (!form.is_active) {
                 return res.status(403).json({ error: 'Access denied: Form is not active' });
@@ -86,7 +86,7 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
         const fieldsQuery = req.user.role === 'superadmin'
             ? 'SELECT * FROM form_fields WHERE form_id = $1 ORDER BY "order" ASC'
             : 'SELECT * FROM form_fields WHERE form_id = $1 AND active = true ORDER BY "order" ASC';
-        
+
         const fieldsResult = await pool.query(fieldsQuery, [form.id]);
         form.fields = fieldsResult.rows;
 
@@ -153,11 +153,29 @@ router.put('/:id', authenticateToken, requireRole('superadmin'), async (req, res
 
 // 删除表单（仅超级管理员）
 router.delete('/:id', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
+    const client = await pool.connect();
     try {
-        await pool.query('DELETE FROM forms WHERE id = $1', [req.params.id]);
-        res.json({ message: 'Form deleted successfully' });
+        await client.query('BEGIN');
+
+        // 1. 删除相关的资产记录
+        await client.query('DELETE FROM assets WHERE form_id = $1', [req.params.id]);
+
+        // 2. 删除相关的字段定义 (虽然有级联删除，但在事务中显式删除更安全清晰)
+        await client.query('DELETE FROM form_fields WHERE form_id = $1', [req.params.id]);
+
+        // 3. 删除相关的权限记录 (虽然有级联删除，但在事务中显式删除更安全清晰)
+        await client.query('DELETE FROM user_form_permissions WHERE form_id = $1', [req.params.id]);
+
+        // 4. 删除表单本身
+        await client.query('DELETE FROM forms WHERE id = $1', [req.params.id]);
+
+        await client.query('COMMIT');
+        res.json({ message: 'Form and all associated data deleted successfully' });
     } catch (error) {
+        await client.query('ROLLBACK');
         next(error);
+    } finally {
+        client.release();
     }
 });
 

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { Settings, Users, Plus, Trash2, ChevronDown, Loader, ArrowUp, ArrowDown, GripVertical } from 'lucide-react';
 import { Button, Modal, useModal, InputGroup, Dropdown, LoadingScreen } from '../utils/UI';
 import { generateId } from '../utils/helpers';
@@ -6,21 +6,26 @@ import { formsAPI } from '../utils/api';
 import UserManagementPanel from './UserManagementPanel';
 
 // 3a. 管理表格模板 (ManageFormsPanel)
-function ManageFormsPanel({ getCollectionHook, onEditFields }) {
-    const { data: forms, loading, error, update: updateForms } = getCollectionHook('forms');
+function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) {
+    // Removed internal getCollectionHook call
     const [newFormName, setNewFormName] = useState('');
     const [actionError, setActionError] = useState(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [updatingFormId, setUpdatingFormId] = useState(null); // 正在更新的表单ID
     const confirmModal = useModal();
-    
+
     // 直接设置数据，避免触发useAPI的更新逻辑
     const setFormsData = useCallback((newForms) => {
-        updateForms(() => newForms);
+        // 确保所有表单都有 fields 数组（即使是空数组），这样 useAPI 会识别为重新加载的数据
+        const formsWithFields = newForms.map(form => ({
+            ...form,
+            fields: form.fields || []
+        }));
+        updateForms(() => formsWithFields);
     }, [updateForms]);
-    
+
     // Add new form
-    const handleAddForm = (e) => {
+    const handleAddForm = async (e) => {
         e.preventDefault();
         if (!newFormName.trim()) {
             setActionError("表格名称不能为空");
@@ -28,30 +33,49 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
         }
         setIsSubmitting(true);
         setActionError(null);
-        
+
         try {
-            const newForm = {
-                id: generateId(),
+            // 调用后端API创建表单
+            const createdForm = await formsAPI.create({
                 name: newFormName.trim(),
-                isActive: true,
-                fields: [], // Start with no fields
-            };
-            
-            updateForms(prevForms => [...prevForms, newForm]);
+                isActive: true
+            });
+
+            // 重新加载所有表单数据，确保数据同步
+            const updatedForms = await formsAPI.getAll();
+
+            // 确保所有表单都有 fields 数组
+            const formsWithFields = updatedForms.map(form => ({
+                ...form,
+                fields: form.fields || []
+            }));
+
+            setFormsData(formsWithFields);
             setNewFormName('');
-            onEditFields(newForm.id); // Automatically open field management for the new form
+
+            // 验证表单是否已存在于更新后的列表中
+            // 注意：由于状态更新是异步的，forms可能还没更新，所以我们检查API返回的列表
+            const formExists = formsWithFields.find(f => f.id === createdForm.id);
+            if (formExists) {
+                // 直接打开字段编辑界面
+                onEditFields(createdForm.id);
+            } else {
+                console.error('创建的表单未找到:', createdForm.id, '可用表单ID:', formsWithFields.map(f => f.id));
+                setActionError('表单创建成功，但无法打开编辑界面，请手动点击"编辑字段"按钮');
+            }
         } catch (err) {
             setActionError(err.message || "添加表格失败");
+            console.error('创建表单失败:', err);
         } finally {
             setIsSubmitting(false);
         }
     };
-    
+
     // Toggle Active Status
     const toggleFormStatus = async (form) => {
         setUpdatingFormId(form.id);
         setActionError(null);
-        
+
         try {
             const newIsActive = !form.isActive;
             // 直接调用API更新单个表单
@@ -59,7 +83,7 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
                 name: form.name,
                 isActive: newIsActive
             });
-            
+
             // 重新加载所有表单数据，并使用特殊标记避免重复API调用
             const updatedForms = await formsAPI.getAll();
             // 使用特殊方式更新，避免触发useAPI的批量更新逻辑
@@ -75,15 +99,23 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
     const openDeleteConfirm = (form) => {
         confirmModal.open({
             title: `确认删除表格 "${form.name}"?`,
-            description: "警告：删除表格模板将不会删除已提交的记录，但会阻止员工提交新记录。建议先禁用。",
+            description: "警告：删除表格将同时删除所有相关的资产记录和历史数据！此操作不可恢复，请谨慎操作。建议先禁用表格而不是删除。",
             onConfirm: () => handleDeleteForm(form)
         });
     };
-    
+
     // Execute Delete
-    const handleDeleteForm = (form) => {
-        updateForms(prevForms => prevForms.filter(f => f.id !== form.id));
-        confirmModal.close();
+    // Execute Delete
+    const handleDeleteForm = async (form) => {
+        try {
+            await formsAPI.delete(form.id);
+            updateForms(prevForms => prevForms.filter(f => f.id !== form.id));
+            confirmModal.close();
+        } catch (err) {
+            console.error("Failed to delete form:", err);
+            setActionError("删除表格失败: " + (err.message || "未知错误"));
+            confirmModal.close();
+        }
     };
 
     if (loading) return <LoadingScreen message="加载表格模板中..." />;
@@ -96,7 +128,7 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
                     {actionError}
                 </div>
             )}
-            
+
             {/* 1. 添加新表格 */}
             <div className="p-6 bg-white rounded-xl shadow-lg border border-blue-200">
                 <h3 className="text-xl font-bold text-gray-800 mb-4">创建新表格模板</h3>
@@ -110,11 +142,11 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
                     />
                     <Button type="submit" variant="primary" disabled={isSubmitting}>
                         <Plus className="w-5 h-5 mr-2" />
-                        创建并编辑字段
+                        创建并编辑表格
                     </Button>
                 </form>
             </div>
-            
+
             {/* 2. 现有表格列表 */}
             <div className="p-6 bg-white rounded-xl shadow-lg">
                 <h3 className="text-xl font-bold text-gray-800 mb-4">现有表格模板</h3>
@@ -132,9 +164,9 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
                                 <Button size="sm" variant="outline" onClick={() => onEditFields(form.id)}>
                                     <Settings className="w-4 h-4 mr-1" /> 编辑字段
                                 </Button>
-                                <Button 
-                                    size="sm" 
-                                    variant={form.isActive ? 'outline' : 'primary'} 
+                                <Button
+                                    size="sm"
+                                    variant={form.isActive ? 'outline' : 'primary'}
                                     onClick={() => toggleFormStatus(form)}
                                     disabled={updatingFormId === form.id}
                                 >
@@ -171,11 +203,32 @@ function ManageFormsPanel({ getCollectionHook, onEditFields }) {
 }
 
 // 3b. 管理表单字段 (ManageFormFieldsPanel)
-function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }) {
-    const { data: forms, update: updateForms } = getCollectionHook('forms');
-    
+function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose }) {
+    // Removed internal getCollectionHook call
+    const [isLoadingForm, setIsLoadingForm] = useState(false);
+
     // 从最新的表单列表中获取当前表单（确保数据同步）
-    const form = forms.find(f => f.id === initialForm.id) || initialForm;
+    const form = forms?.find(f => f.id === initialForm.id) || initialForm;
+
+    // 如果表单不存在或字段数据不完整，重新获取表单详情
+    React.useEffect(() => {
+        const fetchFormDetails = async () => {
+            if (!form || !form.fields || (form.fields.length === 0 && initialForm.id)) {
+                setIsLoadingForm(true);
+                try {
+                    const formDetails = await formsAPI.getById(initialForm.id);
+                    // 更新表单列表中的这个表单
+                    const updatedForms = await formsAPI.getAll();
+                    updateForms(() => updatedForms);
+                } catch (err) {
+                    console.error('获取表单详情失败:', err);
+                } finally {
+                    setIsLoadingForm(false);
+                }
+            }
+        };
+        fetchFormDetails();
+    }, [initialForm.id, form, forms, updateForms]); // Added dependencies for useEffect
     const [newFieldName, setNewFieldName] = useState('');
     const [newFieldType, setNewFieldType] = useState('text');
     const [newFieldFormula, setNewFieldFormula] = useState('');
@@ -183,14 +236,14 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
     const [actionError, setActionError] = useState(null);
     const [updatingFieldId, setUpdatingFieldId] = useState(null); // 正在更新的字段ID
     const confirmModal = useModal();
-    
+
     // For drag and drop
     const [draggedFieldId, setDraggedFieldId] = useState(null);
     const [dragOverFieldId, setDragOverFieldId] = useState(null);
-    
+
     // For cascading field selector
     const [selectedFormId, setSelectedFormId] = useState(null);
-    
+
     // Function to update the form object in the main collection
     const updateFormFields = useCallback((newFields) => {
         // Ensure all fields have order property
@@ -202,7 +255,7 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
             f.id === form.id ? { ...f, fields: fieldsWithOrder } : f
         ));
     }, [form.id, updateForms]);
-    
+
     // Initialize order for existing fields if needed
     React.useEffect(() => {
         const needsOrderInit = form.fields.some(f => f.order === undefined);
@@ -215,11 +268,11 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
         }
     }, [form.fields, updateFormFields]);
 
-    const handleAddField = (e) => {
+    const handleAddField = async (e) => {
         e.preventDefault();
         const name = newFieldName.trim();
         if (!name) { setActionError("字段名称不能为空"); return; }
-        
+
         // 检查名称冲突
         if (form.fields.some(f => f.name === name)) {
             setActionError("字段名称已存在，请更改。");
@@ -228,47 +281,51 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
 
         setIsSubmitting(true);
         setActionError(null);
-        
+
         try {
             // Calculate the next order value (highest order + 1, or 0 if no fields)
-            const maxOrder = form.fields.length > 0 
+            const maxOrder = form.fields.length > 0
                 ? Math.max(...form.fields.map(f => f.order || 0))
                 : -1;
-            
-            const newField = {
-                id: generateId(),
+
+            // 调用后端API创建字段
+            const fieldData = {
                 name: name,
                 type: newFieldType,
                 active: true,
                 order: maxOrder + 1,
-                formula: newFieldType === 'formula' ? newFieldFormula.trim() : undefined,
-                history: [{ status: "created", timestamp: Date.now() }]
+                formula: newFieldType === 'formula' ? newFieldFormula.trim() : undefined
             };
-            
-            updateFormFields([...form.fields, newField]);
-            
+
+            await formsAPI.addField(form.id, fieldData);
+
+            // 重新加载所有表单数据以确保同步
+            const updatedForms = await formsAPI.getAll();
+            updateForms(() => updatedForms);
+
             setNewFieldName('');
             setNewFieldType('text');
             setNewFieldFormula('');
-            
+
         } catch (err) {
             setActionError(err.message || "添加字段失败");
+            console.error('添加字段失败:', err);
         } finally {
             setIsSubmitting(false);
         }
     };
-    
+
     const toggleFieldStatus = async (field) => {
         const newStatus = !field.active;
         setUpdatingFieldId(field.id);
         setActionError(null);
-        
+
         try {
             // 调用API更新字段状态
             await formsAPI.updateField(form.id, field.id, {
                 active: newStatus
             });
-            
+
             // 重新加载所有表单数据以确保同步
             const updatedForms = await formsAPI.getAll();
             updateForms(() => updatedForms);
@@ -278,7 +335,7 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
             setUpdatingFieldId(null);
         }
     };
-    
+
     const openDeleteConfirm = (field) => {
         confirmModal.open({
             title: `确认归档字段 "${field.name}"?`,
@@ -286,7 +343,7 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
             onConfirm: () => handleDeleteField(field)
         });
     };
-    
+
     const handleDeleteField = (field) => {
         // We use archiving instead of actual deletion for safety
         if (field.active) {
@@ -301,59 +358,60 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/html', fieldId);
     };
-    
+
     const handleDragOver = (e, fieldId) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
         setDragOverFieldId(fieldId);
     };
-    
+
     const handleDragLeave = () => {
         setDragOverFieldId(null);
     };
-    
+
     const handleDrop = (e, targetFieldId) => {
         e.preventDefault();
-        
+
         if (!draggedFieldId || draggedFieldId === targetFieldId) {
             setDraggedFieldId(null);
             setDragOverFieldId(null);
             return;
         }
-        
+
         const sortedFields = form.fields.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
         const draggedIndex = sortedFields.findIndex(f => f.id === draggedFieldId);
         const targetIndex = sortedFields.findIndex(f => f.id === targetFieldId);
-        
+
         if (draggedIndex === -1 || targetIndex === -1) {
             setDraggedFieldId(null);
             setDragOverFieldId(null);
             return;
         }
-        
+
         // Remove dragged field and insert at target position
         const draggedField = sortedFields[draggedIndex];
         sortedFields.splice(draggedIndex, 1);
         sortedFields.splice(targetIndex, 0, draggedField);
-        
+
         // Update order values
         sortedFields.forEach((f, idx) => {
             f.order = idx;
         });
-        
+
         updateFormFields(sortedFields);
         setDraggedFieldId(null);
         setDragOverFieldId(null);
     };
-    
+
     const handleDragEnd = () => {
         setDraggedFieldId(null);
         setDragOverFieldId(null);
     };
 
     // Get all forms for cross-form field selection
-    const { data: allForms } = getCollectionHook('forms');
-    
+    // Use passed forms prop instead of hook
+    const allForms = forms || [];
+
     // Get available forms for cascading selector (current form + other forms)
     const availableForms = useMemo(() => {
         return allForms.filter(f => {
@@ -361,7 +419,7 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
             return f.id === form.id || f.fields.some(field => field.active && field.type === 'number');
         });
     }, [allForms, form.id]);
-    
+
     // Get fields for selected form
     const fieldsForSelectedForm = useMemo(() => {
         if (!selectedFormId) {
@@ -375,10 +433,10 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
                     displayName: field.name
                 }));
         }
-        
+
         const selectedForm = allForms.find(f => f.id === selectedFormId);
         if (!selectedForm) return [];
-        
+
         return selectedForm.fields
             .filter(field => field.active && field.type === 'number')
             .map(field => ({
@@ -434,7 +492,7 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
                             </select>
                         </InputGroup>
                     </div>
-                    
+
                     {newFieldType === 'formula' && (
                         <div className="space-y-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                             <label className="block text-sm font-medium text-gray-700">公式定义 (Formula)</label>
@@ -486,14 +544,14 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
                             </div>
                         </div>
                     )}
-                    
+
                     <Button type="submit" variant="primary" disabled={isSubmitting} className="w-full justify-center">
                         {isSubmitting ? <Loader className="w-5 h-5" /> : <Plus className="w-5 h-5 mr-2" />}
                         添加字段
                     </Button>
                 </form>
             </div>
-            
+
             {/* 2. 现有字段列表 */}
             <div className="p-6 bg-white rounded-xl shadow-lg">
                 <h3 className="text-xl font-bold text-gray-800 mb-4">现有字段 ({form.fields.length})</h3>
@@ -514,53 +572,53 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
                                 .slice()
                                 .sort((a, b) => (a.order || 0) - (b.order || 0))
                                 .map((field, index) => (
-                                <tr 
-                                    key={field.id}
-                                    draggable
-                                    onDragStart={(e) => handleDragStart(e, field.id)}
-                                    onDragOver={(e) => handleDragOver(e, field.id)}
-                                    onDragLeave={handleDragLeave}
-                                    onDrop={(e) => handleDrop(e, field.id)}
-                                    onDragEnd={handleDragEnd}
-                                    className={`cursor-move ${draggedFieldId === field.id ? 'opacity-50' : ''} ${dragOverFieldId === field.id ? 'bg-blue-50 border-2 border-blue-300' : ''}`}
-                                >
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                        <div className="flex items-center justify-center">
-                                            <GripVertical className="w-5 h-5 text-gray-400" />
-                                        </div>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{field.name}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        {field.type === 'formula' ? '公式 (Formula)' : 
-                                         field.type === 'number' ? '数字 (Number)' : field.type === 'date' ? '日期 (Date)' : '文本 (Text)'}
-                                    </td>
-                                    <td className="px-6 py-4 text-sm text-gray-500 max-w-sm truncate font-mono text-xs">
-                                        {field.type === 'formula' ? field.formula : field.id}
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        {field.active ? (
-                                            <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">激活</span>
-                                        ) : (
-                                            <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">已归档</span>
-                                        )}
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
-                                        <Button
-                                            variant={field.active ? "outline" : "primary"}
-                                            onClick={() => toggleFieldStatus(field)}
-                                            size="sm"
-                                            disabled={updatingFieldId === field.id}
-                                        >
-                                            {updatingFieldId === field.id ? (
-                                                <>
-                                                    <Loader className="w-4 h-4 mr-1 animate-spin" />
-                                                    处理中...
-                                                </>
+                                    <tr
+                                        key={field.id}
+                                        draggable
+                                        onDragStart={(e) => handleDragStart(e, field.id)}
+                                        onDragOver={(e) => handleDragOver(e, field.id)}
+                                        onDragLeave={handleDragLeave}
+                                        onDrop={(e) => handleDrop(e, field.id)}
+                                        onDragEnd={handleDragEnd}
+                                        className={`cursor-move ${draggedFieldId === field.id ? 'opacity-50' : ''} ${dragOverFieldId === field.id ? 'bg-blue-50 border-2 border-blue-300' : ''}`}
+                                    >
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                            <div className="flex items-center justify-center">
+                                                <GripVertical className="w-5 h-5 text-gray-400" />
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{field.name}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                            {field.type === 'formula' ? '公式 (Formula)' :
+                                                field.type === 'number' ? '数字 (Number)' : field.type === 'date' ? '日期 (Date)' : '文本 (Text)'}
+                                        </td>
+                                        <td className="px-6 py-4 text-sm text-gray-500 max-w-sm truncate font-mono text-xs">
+                                            {field.type === 'formula' ? field.formula : field.id}
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            {field.active ? (
+                                                <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">激活</span>
                                             ) : (
-                                                field.active ? "删除/归档" : "重新激活"
+                                                <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">已归档</span>
                                             )}
-                                        </Button>
-                                        {/* {field.active && (
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                                            <Button
+                                                variant={field.active ? "outline" : "primary"}
+                                                onClick={() => toggleFieldStatus(field)}
+                                                size="sm"
+                                                disabled={updatingFieldId === field.id}
+                                            >
+                                                {updatingFieldId === field.id ? (
+                                                    <>
+                                                        <Loader className="w-4 h-4 mr-1 animate-spin" />
+                                                        处理中...
+                                                    </>
+                                                ) : (
+                                                    field.active ? "删除/归档" : "重新激活"
+                                                )}
+                                            </Button>
+                                            {/* {field.active && (
                                         <Button
                                             variant="danger"
                                             onClick={() => openDeleteConfirm(field)}
@@ -569,14 +627,14 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
                                             删除/归档
                                         </Button>
                                         )} */}
-                                    </td>
-                                </tr>
-                            ))}
+                                        </td>
+                                    </tr>
+                                ))}
                         </tbody>
                     </table>
                 </div>
             </div>
-            
+
             {/* 确认模态框 */}
             {confirmModal.isOpen && (
                 <Modal isOpen={confirmModal.isOpen} onClose={confirmModal.close} title={confirmModal.props.title}>
@@ -587,79 +645,116 @@ function ManageFormFieldsPanel({ form: initialForm, getCollectionHook, onClose }
                     </div>
                 </Modal>
             )}
-    </div>
-  );
+        </div>
+    );
 }
 
 // Main SuperAdminPanel component
 function SuperAdminPanel({ user, getCollectionHook }) {
-  const [activeTab, setActiveTab] = useState('manageForms');
-  const [editingFormId, setEditingFormId] = useState(null);
+    const [activeTab, setActiveTab] = useState('manageForms');
+    const [editingFormId, setEditingFormId] = useState(null);
 
-  const tabs = [
-    { id: 'manageForms', label: '管理表格模板', icon: Settings },
-    { id: 'manageUsers', label: '管理用户', icon: Users },
-  ];
+    const tabs = [
+        { id: 'manageForms', label: '管理表格模板', icon: Settings },
+        { id: 'manageUsers', label: '管理用户', icon: Users },
+    ];
 
-  // Find the form being edited
-  const { data: forms } = getCollectionHook('forms');
-  const editingForm = forms?.find(f => f.id === editingFormId);
+    // Find the form being edited
+    const { data: forms, loading: formsLoading, error: formsError, update: updateForms } = getCollectionHook('forms');
+    const editingForm = forms?.find(f => f.id === editingFormId);
 
-  if (editingForm) {
-      return (
-          <ManageFormFieldsPanel 
-              form={editingForm} 
-              getCollectionHook={getCollectionHook} 
-              onClose={() => setEditingFormId(null)} 
-          />
-      );
-  }
+    // 如果设置了 editingFormId 但表单还在加载中，显示加载状态
+    if (editingFormId && formsLoading) {
+        return <LoadingScreen message="加载表单数据中..." />;
+    }
 
-  return (
-    <div>
-      <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
-      <div className="mt-6">
-        {activeTab === 'manageForms' && <ManageFormsPanel user={user} getCollectionHook={getCollectionHook} onEditFields={setEditingFormId} />}
-        {activeTab === 'manageUsers' && <UserManagementPanel getCollectionHook={getCollectionHook} />}
-      </div>
-    </div>
-  );
+    // 如果设置了 editingFormId 但找不到表单，尝试通过 API 获取
+    React.useEffect(() => {
+        if (editingFormId && !editingForm && !formsLoading && forms) {
+            // 尝试通过 API 获取单个表单
+            formsAPI.getById(editingFormId).then(form => {
+                if (form) {
+                    // 确保表单有 fields 数组
+                    const formWithFields = {
+                        ...form,
+                        fields: form.fields || []
+                    };
+                    // 如果找到了表单，更新 forms 列表
+                    const existingIndex = forms.findIndex(f => f.id === editingFormId);
+                    const updatedForms = existingIndex >= 0
+                        ? forms.map((f, idx) => idx === existingIndex ? formWithFields : f)
+                        : [...forms, formWithFields];
+                    updateForms(updatedForms);
+                }
+            }).catch(err => {
+                console.error('获取表单失败:', err);
+            });
+        }
+    }, [editingFormId, editingForm, formsLoading, forms, updateForms]);
+
+    if (editingForm) {
+        return (
+            <ManageFormFieldsPanel
+                form={editingForm}
+                forms={forms}
+                updateForms={updateForms}
+                onClose={() => setEditingFormId(null)}
+            />
+        );
+    }
+
+    return (
+        <div>
+            <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
+            <div className="mt-6">
+                {activeTab === 'manageForms' && (
+                    <ManageFormsPanel
+                        forms={forms}
+                        loading={formsLoading}
+                        error={formsError}
+                        updateForms={updateForms}
+                        onEditFields={setEditingFormId}
+                    />
+                )}
+                {activeTab === 'manageUsers' && <UserManagementPanel getCollectionHook={getCollectionHook} />}
+            </div>
+        </div>
+    );
 }
 
 // Tabs component (moved from utils to here since it's used in this component)
 function Tabs({ tabs, activeTab, onTabChange }) {
-  return (
-    <div className="border-b border-gray-200">
-      <nav className="-mb-px flex space-x-6" aria-label="Tabs">
-        {tabs.map((tab) => {
-          const isActive = tab.id === activeTab;
-          const Icon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => onTabChange(tab.id)}
-              className={`group inline-flex items-center py-4 px-1 border-b-2 font-medium text-sm transition-colors duration-200
-                ${
-                  isActive
-                    ? 'border-blue-600 text-blue-700'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }
+    return (
+        <div className="border-b border-gray-200">
+            <nav className="-mb-px flex space-x-6" aria-label="Tabs">
+                {tabs.map((tab) => {
+                    const isActive = tab.id === activeTab;
+                    const Icon = tab.icon;
+                    return (
+                        <button
+                            key={tab.id}
+                            onClick={() => onTabChange(tab.id)}
+                            className={`group inline-flex items-center py-4 px-1 border-b-2 font-medium text-sm transition-colors duration-200
+                ${isActive
+                                    ? 'border-blue-600 text-blue-700'
+                                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                }
                 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 rounded-t-md
               `}
-              aria-current={isActive ? 'page' : undefined}
-            >
-              <Icon 
-                className={`w-5 h-5 mr-2
+                            aria-current={isActive ? 'page' : undefined}
+                        >
+                            <Icon
+                                className={`w-5 h-5 mr-2
                   ${isActive ? 'text-blue-600' : 'text-gray-400 group-hover:text-gray-500'}
-                `} 
-              />
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
-      </nav>
-    </div>
-  );
+                `}
+                            />
+                            <span>{tab.label}</span>
+                        </button>
+                    );
+                })}
+            </nav>
+        </div>
+    );
 }
 
 export default SuperAdminPanel;
