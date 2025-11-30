@@ -16,10 +16,13 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     const [executionResult, setExecutionResult] = useState(null);
     const [loadingReport, setLoadingReport] = useState(false);
     const [sortOrders, setSortOrders] = useState([]);
+    const [numberInputs, setNumberInputs] = useState({}); // Store number input values by calcId
     const saveModal = useModal();
 
     // 如果是编辑模式，加载报表数据
     useEffect(() => {
+        if (formsLoading) return;
+
         if (editingReport) {
             loadReportData(editingReport);
         } else {
@@ -33,7 +36,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             setSortOrders([]);
             setExecutionResult(null);
         }
-    }, [editingReport]);
+    }, [editingReport, formsLoading]);
 
     // 加载报表数据并回填表单
     const loadReportData = async (report) => {
@@ -88,7 +91,8 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             if (config.calculations && Array.isArray(config.calculations)) {
                 // 获取所有可用字段（用于解析表达式）
                 const allFields = [];
-                selectedForms.forEach(formId => {
+                const formsToUse = config.selectedForms || [];
+                formsToUse.forEach(formId => {
                     const form = forms.find(f => f.id === formId);
                     if (form && form.fields) {
                         form.fields
@@ -110,10 +114,15 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                     let parts = calc.parts || [];
                     if (!parts.length && calc.expression) {
                         // 简单解析：按空格分割，识别字段ID和运算符
-                        const tokens = calc.expression.split(/\s+/);
+                        // 预处理：在括号前后添加空格，确保 split 能正确分离括号
+                        const normalizedExpression = calc.expression
+                            .replace(/\(/g, ' ( ')
+                            .replace(/\)/g, ' ) ')
+                            .trim();
+                        const tokens = normalizedExpression.split(/\s+/);
                         parts = tokens.map(token => {
                             // 检查是否是运算符
-                            if (['+', '-', '*', '/'].includes(token)) {
+                            if (['+', '-', '*', '/', '(', ')'].includes(token)) {
                                 return { type: 'operator', value: token };
                             }
                             // 检查是否是数字
@@ -124,7 +133,20 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             const field = allFields.find(f => f.fieldId === token);
                             return { type: 'field', fieldId: token, fieldName: field?.fieldName || token };
                         });
+                    } else {
+                        // 如果已有parts，确保fieldName是最新的
+                        parts = parts.map(part => {
+                            if (part.type === 'field') {
+                                const field = allFields.find(f => f.fieldId === part.fieldId);
+                                return {
+                                    ...part,
+                                    fieldName: field?.fieldName || part.fieldName || part.fieldId
+                                };
+                            }
+                            return part;
+                        });
                     }
+
                     return {
                         name: calc.name || `计算字段${index + 1}`,
                         expression: calc.expression || '',
@@ -213,10 +235,10 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                 // 取消选择时，移除相关字段和聚合
                 const form = forms.find(f => f.id === formId);
                 const formFieldIds = form?.fields?.map(f => f.id) || [];
-                setSelectedFields(prevFields => 
+                setSelectedFields(prevFields =>
                     prevFields.filter(f => f.formId !== formId)
                 );
-                setAggregations(prevAggs => 
+                setAggregations(prevAggs =>
                     prevAggs.filter(a => a.formId !== formId)
                 );
                 return prev.filter(id => id !== formId);
@@ -255,7 +277,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
     // 更新聚合函数
     const updateAggregation = (id, updates) => {
-        setAggregations(prev => prev.map(agg => 
+        setAggregations(prev => prev.map(agg =>
             agg.id === id ? { ...agg, ...updates } : agg
         ));
     };
@@ -323,6 +345,8 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             }
             return calc;
         }));
+        // Clear the input
+        setNumberInputs(prev => ({ ...prev, [calcId]: '' }));
     };
 
     // 删除计算表达式的最后一个部分
@@ -349,7 +373,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
     // 更新计算字段
     const updateCalculation = (id, updates) => {
-        setCalculations(prev => prev.map(calc => 
+        setCalculations(prev => prev.map(calc =>
             calc.id === id ? { ...calc, ...updates } : calc
         ));
     };
@@ -498,7 +522,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             // 尝试解析错误响应
             let errorMessage = error.message || '执行失败';
             let errorSuggestion = '';
-            
+
             try {
                 const errorData = error.response?.data || error.data;
                 if (errorData) {
@@ -515,11 +539,11 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             } catch (e) {
                 // 如果解析失败，使用原始错误信息
             }
-            
-            const fullMessage = errorSuggestion 
+
+            const fullMessage = errorSuggestion
                 ? `${errorMessage}\n\n${errorSuggestion}`
                 : errorMessage;
-            
+
             alert(fullMessage);
         } finally {
             setIsExecuting(false);
@@ -684,18 +708,18 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                                     <Trash2 className="w-4 h-4" />
                                 </Button>
                             </div>
-                            
+
                             {/* 表达式显示 */}
                             <div className="mb-3 p-2 bg-white border rounded text-sm font-mono min-h-[2rem] flex items-center">
                                 {calc.parts && calc.parts.length > 0 ? (
                                     <div className="flex flex-wrap items-center gap-1">
                                         {calc.parts.map((part, idx) => (
                                             <span key={idx} className="px-2 py-1 rounded bg-blue-100 text-blue-800">
-                                                {part.type === 'field' 
+                                                {part.type === 'field'
                                                     ? `${part.fieldName || part.fieldId}`
                                                     : part.type === 'operator'
-                                                    ? part.value
-                                                    : part.value}
+                                                        ? part.value
+                                                        : part.value}
                                             </span>
                                         ))}
                                     </div>
@@ -742,31 +766,48 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                                         <option value="-">- (减)</option>
                                         <option value="*">* (乘)</option>
                                         <option value="/">/ (除)</option>
+                                        <option value="(">( (左括号)</option>
+                                        <option value=")">) (右括号)</option>
                                     </select>
-                                    <input
-                                        type="number"
-                                        placeholder="数字"
-                                        className="w-24 px-2 py-1 border rounded text-sm"
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && e.target.value) {
-                                                addNumberToCalculation(calc.id, e.target.value);
-                                                e.target.value = '';
-                                            }
-                                        }}
-                                    />
+                                    <div className="flex items-center space-x-1">
+                                        <input
+                                            type="number"
+                                            placeholder="数字"
+                                            value={numberInputs[calc.id] || ''}
+                                            onChange={(e) => setNumberInputs(prev => ({ ...prev, [calc.id]: e.target.value }))}
+                                            className="w-24 px-2 py-1 border rounded text-sm"
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' && numberInputs[calc.id]) {
+                                                    addNumberToCalculation(calc.id, numberInputs[calc.id]);
+                                                }
+                                            }}
+                                        />
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => {
+                                                if (numberInputs[calc.id]) {
+                                                    addNumberToCalculation(calc.id, numberInputs[calc.id]);
+                                                }
+                                            }}
+                                            disabled={!numberInputs[calc.id]}
+                                        >
+                                            <Plus className="w-3 h-3" />
+                                        </Button>
+                                    </div>
                                 </div>
                                 <div className="flex items-center space-x-2">
-                                    <Button 
-                                        size="sm" 
-                                        variant="outline" 
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
                                         onClick={() => removeLastPartFromCalculation(calc.id)}
                                         disabled={!calc.parts || calc.parts.length === 0}
                                     >
                                         删除最后一项
                                     </Button>
-                                    <Button 
-                                        size="sm" 
-                                        variant="outline" 
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
                                         onClick={() => clearCalculationExpression(calc.id)}
                                         disabled={!calc.parts || calc.parts.length === 0}
                                     >
