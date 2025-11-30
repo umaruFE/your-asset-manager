@@ -13,6 +13,7 @@ export default function ReportsPanel({ user, getCollectionHook }) {
     const [executingReport, setExecutingReport] = useState(null);
     const [executionResult, setExecutionResult] = useState(null);
     const confirmModal = useModal();
+    const canManageReports = user.role === 'superadmin';
 
     // 加载报表列表
     useEffect(() => {
@@ -84,7 +85,7 @@ export default function ReportsPanel({ user, getCollectionHook }) {
         return <LoadingScreen message="加载报表中..." />;
     }
 
-    if (showBuilder) {
+    if (showBuilder && canManageReports) {
         return (
             <ReportBuilder
                 user={user}
@@ -110,10 +111,12 @@ export default function ReportsPanel({ user, getCollectionHook }) {
             {/* 创建报表按钮 */}
             <div className="flex justify-between items-center">
                 <h2 className="text-2xl font-bold text-gray-800">统计报表</h2>
-                <Button variant="primary" onClick={() => setShowBuilder(true)}>
-                    <Plus className="w-5 h-5 mr-2" />
-                    创建报表
-                </Button>
+                {canManageReports && (
+                    <Button variant="primary" onClick={() => setShowBuilder(true)}>
+                        <Plus className="w-5 h-5 mr-2" />
+                        创建报表
+                    </Button>
+                )}
             </div>
 
             {/* 报表列表 */}
@@ -121,13 +124,25 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                 {reports.map(report => (
                     <div key={report.id} className="p-6 bg-white rounded-xl shadow-lg border border-gray-200">
                         <div className="flex items-start justify-between mb-4">
-                            <div>
-                                <h3 className="text-lg font-semibold text-gray-800">{report.name}</h3>
+                            <button
+                                className="text-left flex-1 group"
+                                type="button"
+                                onClick={() => handleExecute(report)}
+                            >
+                                <h3 className="text-lg font-semibold text-gray-800 group-hover:text-blue-600">
+                                    {report.name}
+                                </h3>
                                 {report.description && (
                                     <p className="text-sm text-gray-500 mt-1">{report.description}</p>
                                 )}
-                            </div>
-                            <FileText className="w-8 h-8 text-blue-500" />
+                                {!canManageReports && (
+                                    <p className="text-xs text-blue-500 mt-2 flex items-center space-x-1">
+                                        <Play className="w-3 h-3" />
+                                        <span>点击查看报表结果</span>
+                                    </p>
+                                )}
+                            </button>
+                            <FileText className="w-8 h-8 text-blue-500 ml-4 flex-shrink-0" />
                         </div>
                         
                         <div className="space-y-2 mb-4">
@@ -167,41 +182,43 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                             )}
                         </div>
 
-                        <div className="flex space-x-2">
-                            <Button
-                                size="sm"
-                                variant="primary"
-                                onClick={() => handleExecute(report)}
-                                disabled={executingReport === report.id}
-                            >
-                                <Play className="w-4 h-4 mr-1" />
-                                {executingReport === report.id ? '执行中...' : '执行'}
-                            </Button>
-                            <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => {
-                                    setEditingReport(report);
-                                    setShowBuilder(true);
-                                }}
-                            >
-                                <Edit className="w-4 h-4 mr-1" />
-                                编辑
-                            </Button>
-                            <Button
-                                size="sm"
-                                variant="danger"
-                                onClick={() => {
-                                    confirmModal.open({
-                                        title: `确认删除报表 "${report.name}"?`,
-                                        description: '此操作不可恢复',
-                                        onConfirm: () => handleDelete(report)
-                                    });
-                                }}
-                            >
-                                <Trash2 className="w-4 h-4" />
-                            </Button>
-                        </div>
+                        {canManageReports && (
+                            <div className="flex space-x-2">
+                                <Button
+                                    size="sm"
+                                    variant="primary"
+                                    onClick={() => handleExecute(report)}
+                                    disabled={executingReport === report.id}
+                                >
+                                    <Play className="w-4 h-4 mr-1" />
+                                    {executingReport === report.id ? '执行中...' : '执行'}
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => {
+                                        setEditingReport(report);
+                                        setShowBuilder(true);
+                                    }}
+                                >
+                                    <Edit className="w-4 h-4 mr-1" />
+                                    编辑
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    variant="danger"
+                                    onClick={() => {
+                                        confirmModal.open({
+                                            title: `确认删除报表 "${report.name}"?`,
+                                            description: '此操作不可恢复',
+                                            onConfirm: () => handleDelete(report)
+                                        });
+                                    }}
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </Button>
+                            </div>
+                        )}
                     </div>
                 ))}
             </div>
@@ -210,10 +227,14 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                 <div className="text-center py-12 text-gray-500">
                     <FileText className="w-16 h-16 mx-auto mb-4 text-gray-300" />
                     <p>还没有创建任何报表</p>
-                    <Button variant="primary" className="mt-4" onClick={() => setShowBuilder(true)}>
-                        <Plus className="w-5 h-5 mr-2" />
-                        创建第一个报表
-                    </Button>
+                    {canManageReports ? (
+                        <Button variant="primary" className="mt-4" onClick={() => setShowBuilder(true)}>
+                            <Plus className="w-5 h-5 mr-2" />
+                            创建第一个报表
+                        </Button>
+                    ) : (
+                        <p className="text-sm text-gray-400 mt-2">请联系超级管理员分配报表</p>
+                    )}
                 </div>
             )}
 

@@ -1,9 +1,38 @@
 import express from 'express';
+import path from 'path';
+import { promises as fs } from 'fs';
+import ExcelJS from 'exceljs';
 import { pool } from '../config/database.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { authenticateToken, requireRole, checkFormPermission } from '../middleware/auth.js';
 import { generateId, toCamelCaseObject } from '../utils/helpers.js';
 
 const router = express.Router();
+const ARCHIVE_STORAGE_DIR = path.resolve(process.cwd(), 'storage', 'archives');
+let archiveDirReady = false;
+
+async function ensureArchiveDir() {
+    if (!archiveDirReady) {
+        await fs.mkdir(ARCHIVE_STORAGE_DIR, { recursive: true });
+        archiveDirReady = true;
+    }
+}
+
+function sanitizeFileName(name) {
+    return name.replace(/[^0-9a-zA-Z\u4e00-\u9fa5-_]/g, '_');
+}
+
+function createHttpError(status, message) {
+    const error = new Error(message);
+    error.status = status;
+    return error;
+}
+
+function isPathInside(childPath, parentPath) {
+    const normalizedParent = path.resolve(parentPath);
+    const normalizedChild = path.resolve(childPath);
+    const relativePath = path.relative(normalizedParent, normalizedChild);
+    return !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
+}
 
 // 获取所有表单（根据权限过滤）
 router.get('/', authenticateToken, async (req, res, next) => {
@@ -11,18 +40,22 @@ router.get('/', authenticateToken, async (req, res, next) => {
         let query = 'SELECT * FROM forms WHERE 1=1';
         const params = [];
         let paramIndex = 1;
+        const requestedArchiveStatus = req.query.archiveStatus;
 
         // 超级管理员可以看到所有表单（包括禁用的）
-        // 其他角色只能看到激活的表单，并且需要通过权限表过滤
+        // 其他角色只能看到激活且未归档的表单，并且需要通过权限表过滤
         if (req.user.role !== 'superadmin') {
-            query += ' AND is_active = true';
+            query += ` AND is_active = true AND archive_status = $${paramIndex++}`;
+            params.push('active');
 
-            // 所有非超级管理员角色都需要通过权限表过滤
             query += ` AND id IN (
                 SELECT form_id FROM user_form_permissions 
                 WHERE user_id = $${paramIndex++} AND can_view = true
             )`;
             params.push(req.user.id);
+        } else if (requestedArchiveStatus) {
+            query += ` AND archive_status = $${paramIndex++}`;
+            params.push(requestedArchiveStatus);
         }
 
         query += ' ORDER BY created_at DESC';
@@ -76,9 +109,9 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
                 return res.status(403).json({ error: 'Access denied: No permission to view this form' });
             }
 
-            // 非超级管理员只能查看激活的表单
-            if (!form.is_active) {
-                return res.status(403).json({ error: 'Access denied: Form is not active' });
+            // 非超级管理员只能查看激活且未归档的表单
+            if (!form.is_active || form.archive_status !== 'active') {
+                return res.status(403).json({ error: 'Access denied: Form is not available' });
             }
         }
 
@@ -125,11 +158,43 @@ router.post('/', authenticateToken, requireRole('superadmin'), async (req, res, 
 // 更新表单（仅超级管理员）
 router.put('/:id', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
-        const { name, isActive } = req.body;
+        const { name, isActive, archiveStatus } = req.body;
+
+        const existingFormResult = await pool.query('SELECT * FROM forms WHERE id = $1', [req.params.id]);
+        if (existingFormResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Form not found' });
+        }
+        const existingForm = existingFormResult.rows[0];
+
+        const updateFields = [];
+        const updateValues = [];
+        let paramIndex = 1;
+
+        if (name !== undefined) {
+            updateFields.push(`name = $${paramIndex++}`);
+            updateValues.push(name);
+        }
+        if (isActive !== undefined) {
+            updateFields.push(`is_active = $${paramIndex++}`);
+            updateValues.push(isActive);
+        }
+        if (archiveStatus !== undefined) {
+            if (!['active', 'archived'].includes(archiveStatus)) {
+                return res.status(400).json({ error: 'Invalid archive status' });
+            }
+            updateFields.push(`archive_status = $${paramIndex++}`);
+            updateValues.push(archiveStatus);
+        }
+
+        if (updateFields.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+
+        updateValues.push(req.params.id);
 
         await pool.query(
-            'UPDATE forms SET name = $1, is_active = $2 WHERE id = $3',
-            [name, isActive, req.params.id]
+            `UPDATE forms SET ${updateFields.join(', ')} WHERE id = $${paramIndex}`,
+            updateValues
         );
 
         const result = await pool.query('SELECT * FROM forms WHERE id = $1', [req.params.id]);
@@ -143,6 +208,10 @@ router.put('/:id', authenticateToken, requireRole('superadmin'), async (req, res
             [form.id]
         );
         form.fields = fieldsResult.rows;
+
+        if (name && name !== existingForm.name) {
+            await updateFormNameReferences(existingForm.name, name);
+        }
 
         // 转换字段名从下划线到驼峰
         res.json(toCamelCaseObject(form));
@@ -183,18 +252,30 @@ router.delete('/:id', authenticateToken, requireRole('superadmin'), async (req, 
 // 添加字段
 router.post('/:formId/fields', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
-        const { name, type, active = true, order, formula } = req.body;
+        const { name, type, active = true, order, formula, displayPrecision, options } = req.body;
 
         if (!name || !type) {
             return res.status(400).json({ error: 'Field name and type are required' });
         }
 
+        if (type === 'select' && (!Array.isArray(options) || options.length === 0)) {
+            return res.status(400).json({ error: '下拉字段必须至少包含一个选项' });
+        }
+
         const id = generateId();
-        const maxOrder = order !== undefined ? order : await getMaxOrder(req.params.formId);
+        const fieldKey = req.body.fieldKey || generateId();
+        const resolvedOrder = order !== undefined ? order : await getMaxOrder(req.params.formId);
+        const precision =
+            typeof displayPrecision === 'number' && displayPrecision >= 0
+                ? Math.min(displayPrecision, 6)
+                : 0;
+        const normalizedOptions = Array.isArray(options)
+            ? options.map((opt) => (typeof opt === 'string' ? opt.trim() : String(opt))).filter(Boolean)
+            : null;
 
         await pool.query(
-            'INSERT INTO form_fields (id, form_id, name, type, active, "order", formula) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-            [id, req.params.formId, name, type, active, maxOrder + 1, formula || null]
+            'INSERT INTO form_fields (id, form_id, field_key, name, type, display_precision, active, "order", formula, options) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+            [id, req.params.formId, fieldKey, name, type, precision, active, resolvedOrder + 1, formula || null, normalizedOptions ? JSON.stringify(normalizedOptions) : null]
         );
 
         const result = await pool.query('SELECT * FROM form_fields WHERE id = $1', [id]);
@@ -208,7 +289,25 @@ router.post('/:formId/fields', authenticateToken, requireRole('superadmin'), asy
 // 更新字段
 router.put('/:formId/fields/:fieldId', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
-        const { name, type, active, order, formula } = req.body;
+        const existingResult = await pool.query(
+            `SELECT f.*, fm.name AS form_name 
+             FROM form_fields f 
+             JOIN forms fm ON fm.id = f.form_id
+             WHERE f.id = $1 AND f.form_id = $2`,
+            [req.params.fieldId, req.params.formId]
+        );
+
+        if (existingResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Field not found' });
+        }
+
+        const existingField = existingResult.rows[0];
+
+        const { name, type, active, order, formula, displayPrecision, options } = req.body;
+
+        if (type === 'select' && (!Array.isArray(options) || options.length === 0)) {
+            return res.status(400).json({ error: '下拉字段必须至少包含一个选项' });
+        }
 
         const updateFields = [];
         const updateValues = [];
@@ -234,6 +333,18 @@ router.put('/:formId/fields/:fieldId', authenticateToken, requireRole('superadmi
             updateFields.push(`formula = $${paramIndex++}`);
             updateValues.push(formula);
         }
+        if (displayPrecision !== undefined) {
+            const precision = Math.max(0, Math.min(Number(displayPrecision), 6));
+            updateFields.push(`display_precision = $${paramIndex++}`);
+            updateValues.push(precision);
+        }
+        if (options !== undefined) {
+            const normalizedOptions = Array.isArray(options)
+                ? options.map((opt) => (typeof opt === 'string' ? opt.trim() : String(opt))).filter(Boolean)
+                : null;
+            updateFields.push(`options = $${paramIndex++}`);
+            updateValues.push(normalizedOptions ? JSON.stringify(normalizedOptions) : null);
+        }
 
         if (updateFields.length === 0) {
             return res.status(400).json({ error: 'No fields to update' });
@@ -247,14 +358,14 @@ router.put('/:formId/fields/:fieldId', authenticateToken, requireRole('superadmi
             updateValues
         );
 
+        if (name && name !== existingField.name) {
+            await updateFieldNameReferences(req.params.formId, existingField.form_name, existingField.name, name);
+        }
+
         const result = await pool.query(
             'SELECT * FROM form_fields WHERE id = $1 AND form_id = $2',
             [req.params.fieldId, req.params.formId]
         );
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Field not found' });
-        }
 
         // 转换字段名从下划线到驼峰
         res.json(toCamelCaseObject(result.rows[0]));
@@ -309,6 +420,455 @@ router.delete('/:formId/fields/:fieldId', authenticateToken, requireRole('supera
     }
 });
 
+// 批量归档
+router.post('/archive/batch', authenticateToken, requireRole('company_asset', 'superadmin'), async (req, res, next) => {
+    try {
+        const { formIds, autoUnlock = true } = req.body || {};
+        if (!Array.isArray(formIds) || formIds.length === 0) {
+            return res.status(400).json({ error: 'formIds must be a non-empty array' });
+        }
+
+        const results = [];
+        for (const formId of formIds) {
+            try {
+                const archiveInfo = await archiveFormById(formId, req.user, { autoUnlock });
+                results.push({ formId, success: true, archive: archiveInfo });
+            } catch (error) {
+                results.push({
+                    formId,
+                    success: false,
+                    error: error.message || '归档失败'
+                });
+            }
+        }
+
+        const hasFailure = results.some((item) => !item.success);
+        res.status(hasFailure ? 207 : 200).json({ results });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// 单个归档
+router.post('/:id/archive', authenticateToken, requireRole('company_asset', 'superadmin'), async (req, res, next) => {
+    try {
+        const autoUnlock = req.body?.autoUnlock !== false;
+        const archiveResult = await archiveFormById(req.params.id, req.user, { autoUnlock });
+        res.json(archiveResult);
+    } catch (error) {
+        next(error);
+    }
+});
+
+// 查看归档列表
+router.get('/:id/archives', authenticateToken, async (req, res, next) => {
+    try {
+        if (req.user.role !== 'superadmin') {
+            const hasPermission = await checkFormPermission(req.user.id, req.params.id);
+            if (!hasPermission) {
+                return res.status(403).json({ error: 'Insufficient permissions' });
+            }
+        }
+
+        const result = await pool.query(
+            'SELECT id, form_id, form_name, version, archived_at, archived_by, file_path, metadata FROM form_archives WHERE form_id = $1 ORDER BY archived_at DESC',
+            [req.params.id]
+        );
+        const camelRows = result.rows.map((row) => toCamelCaseObject(row));
+        res.json(camelRows);
+    } catch (error) {
+        next(error);
+    }
+});
+
+// 下载归档文件或返回JSON
+router.get('/archives/:archiveId/download', authenticateToken, async (req, res, next) => {
+    try {
+        const result = await pool.query('SELECT * FROM form_archives WHERE id = $1', [req.params.archiveId]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Archive not found' });
+        }
+
+        const archive = result.rows[0];
+
+        if (req.user.role !== 'superadmin') {
+            const hasPermission = await checkFormPermission(req.user.id, archive.form_id);
+            if (!hasPermission) {
+                return res.status(403).json({ error: 'Insufficient permissions' });
+            }
+        }
+
+        const archiveData = toCamelCaseObject(archive);
+        if (archive.file_path) {
+            const absolutePath = path.resolve(process.cwd(), archive.file_path);
+            if (isPathInside(absolutePath, ARCHIVE_STORAGE_DIR)) {
+                try {
+                    await fs.access(absolutePath);
+                    return res.download(absolutePath, path.basename(absolutePath));
+                } catch (fileError) {
+                    console.warn(`Archive file missing, fallback to JSON output: ${fileError.message}`);
+                }
+            } else {
+                console.warn('Blocked attempt to access archive outside of storage directory:', absolutePath);
+            }
+        }
+
+        res.json({
+            meta: archiveData.metadata,
+            fields: archiveData.fieldsSnapshot,
+            records: archiveData.dataSnapshot
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// 导出表格（未归档或指定归档版本）
+router.get('/:id/export', authenticateToken, async (req, res, next) => {
+    try {
+        const { scope = 'active', archiveId } = req.query;
+        const formResult = await pool.query('SELECT * FROM forms WHERE id = $1', [req.params.id]);
+        if (formResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Form not found' });
+        }
+        const form = formResult.rows[0];
+
+        if (req.user.role !== 'superadmin') {
+            const hasPermission = await checkFormPermission(req.user.id, form.id);
+            if (!hasPermission) {
+                return res.status(403).json({ error: 'Insufficient permissions' });
+            }
+        }
+
+        const fieldsResult = await pool.query(
+            'SELECT * FROM form_fields WHERE form_id = $1 ORDER BY "order" ASC',
+            [form.id]
+        );
+
+        if (scope === 'archive') {
+            let archiveRecord;
+            if (archiveId) {
+                const archiveResult = await pool.query(
+                    'SELECT * FROM form_archives WHERE id = $1 AND form_id = $2',
+                    [archiveId, form.id]
+                );
+                archiveRecord = archiveResult.rows[0];
+            } else {
+                const latestArchive = await pool.query(
+                    'SELECT * FROM form_archives WHERE form_id = $1 ORDER BY version DESC LIMIT 1',
+                    [form.id]
+                );
+                archiveRecord = latestArchive.rows[0];
+            }
+
+            if (!archiveRecord) {
+                return res.status(404).json({ error: '未找到归档版本' });
+            }
+
+            const snapshotFields = archiveRecord.fields_snapshot || fieldsResult.rows;
+            const flattenedRows = flattenArchiveRecords(archiveRecord.data_snapshot || []);
+
+            await streamFormWorkbook({
+                res,
+                form,
+                fields: snapshotFields,
+                rows: flattenedRows,
+                scope: 'archive',
+                meta: {
+                    version: archiveRecord.version,
+                    archivedAt: archiveRecord.archived_at
+                }
+            });
+        } else {
+            const assetsResult = await pool.query(
+                'SELECT id, sub_account_name, submitted_at, base_id, batch_data FROM assets WHERE form_id = $1 ORDER BY submitted_at ASC',
+                [form.id]
+            );
+            const flattenedRows = flattenActiveAssets(assetsResult.rows);
+
+            await streamFormWorkbook({
+                res,
+                form,
+                fields: fieldsResult.rows,
+                rows: flattenedRows,
+                scope: 'active'
+            });
+        }
+    } catch (error) {
+        next(error);
+    }
+});
+
+// 归档核心逻辑
+async function archiveFormById(formId, user, options = {}) {
+    const { autoUnlock = true } = options;
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const formResult = await client.query(
+            'SELECT * FROM forms WHERE id = $1 FOR UPDATE',
+            [formId]
+        );
+
+        if (formResult.rows.length === 0) {
+            throw createHttpError(404, 'Form not found');
+        }
+
+        const form = formResult.rows[0];
+        if (form.archive_status !== 'active') {
+            throw createHttpError(400, '该表格已处于已归档状态，不能重复归档');
+        }
+
+        const fieldsResult = await client.query(
+            'SELECT * FROM form_fields WHERE form_id = $1 ORDER BY "order" ASC',
+            [formId]
+        );
+        const assetsResult = await client.query(
+            'SELECT * FROM assets WHERE form_id = $1 ORDER BY submitted_at ASC',
+            [formId]
+        );
+
+        const archivedAt = new Date();
+        const version = Number(form.archive_version || 0) + 1;
+        const archiveId = generateId();
+
+        const records = assetsResult.rows.map((row) => ({
+            assetId: row.id,
+            submittedAt: row.submitted_at,
+            baseId: row.base_id,
+            subAccountId: row.sub_account_id,
+            subAccountName: row.sub_account_name,
+            batchData: row.batch_data
+        }));
+
+        const baseCount = new Set(records.map((r) => r.baseId).filter(Boolean)).size;
+
+        const metadata = {
+            formId: form.id,
+            formName: form.name,
+            version,
+            archivedAt: archivedAt.toISOString(),
+            archivedBy: user.name,
+            recordCount: records.length,
+            baseCount
+        };
+
+        const archivePayload = {
+            meta: metadata,
+            fields: fieldsResult.rows,
+            records
+        };
+
+        await ensureArchiveDir();
+        const timestampLabel = archivedAt.toISOString().replace(/[:.]/g, '-');
+        const safeName = sanitizeFileName(form.name || 'form');
+        const fileName = `${safeName}_${timestampLabel}_v${version}.json`;
+        const absolutePath = path.join(ARCHIVE_STORAGE_DIR, fileName);
+        await fs.writeFile(absolutePath, JSON.stringify(archivePayload, null, 2), 'utf8');
+        const relativePath = path.relative(process.cwd(), absolutePath).split(path.sep).join('/');
+
+        await client.query(
+            `INSERT INTO form_archives (id, form_id, form_name, version, archived_at, archived_by, file_path, file_type, fields_snapshot, data_snapshot, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [
+                archiveId,
+                form.id,
+                form.name,
+                version,
+                archivedAt,
+                user.id,
+                relativePath,
+                'json',
+                JSON.stringify(fieldsResult.rows),
+                JSON.stringify(records),
+                JSON.stringify(metadata)
+            ]
+        );
+
+        await client.query('DELETE FROM assets WHERE form_id = $1', [formId]);
+
+        await client.query(
+            'UPDATE forms SET archive_status = $1, archive_version = $2, archived_at = $3, archived_by = $4 WHERE id = $5',
+            [autoUnlock ? 'active' : 'archived', version, archivedAt, user.id, formId]
+        );
+
+        await client.query('COMMIT');
+
+        return {
+            archiveId,
+            formId: form.id,
+            version,
+            archivedAt: metadata.archivedAt,
+            recordCount: records.length,
+            filePath: relativePath
+        };
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
+}
+
+async function updateFieldNameReferences(formId, formName, oldName, newName) {
+    if (!oldName || !newName || oldName === newName) {
+        return;
+    }
+
+    const sameFormResult = await pool.query(
+        'SELECT id, formula FROM form_fields WHERE form_id = $1 AND type = $2 AND formula IS NOT NULL',
+        [formId, 'formula']
+    );
+
+    for (const field of sameFormResult.rows) {
+        const updatedFormula = replaceStandaloneToken(field.formula, oldName, newName);
+        if (updatedFormula !== field.formula) {
+            await pool.query('UPDATE form_fields SET formula = $1 WHERE id = $2', [updatedFormula, field.id]);
+        }
+    }
+
+    if (formName) {
+        const crossFormResult = await pool.query(
+            'SELECT id, formula FROM form_fields WHERE form_id <> $1 AND type = $2 AND formula LIKE $3',
+            [formId, 'formula', `%${formName}.${oldName}%`]
+        );
+
+        for (const field of crossFormResult.rows) {
+            const updatedFormula = field.formula.replaceAll(`${formName}.${oldName}`, `${formName}.${newName}`);
+            if (updatedFormula !== field.formula) {
+                await pool.query('UPDATE form_fields SET formula = $1 WHERE id = $2', [updatedFormula, field.id]);
+            }
+        }
+    }
+}
+
+async function updateFormNameReferences(oldName, newName) {
+    if (!oldName || !newName || oldName === newName) {
+        return;
+    }
+
+    const crossFormResult = await pool.query(
+        'SELECT id, formula FROM form_fields WHERE type = $1 AND formula LIKE $2',
+        ['formula', `%${oldName}.%`]
+    );
+
+    for (const field of crossFormResult.rows) {
+        const updatedFormula = field.formula.replaceAll(`${oldName}.`, `${newName}.`);
+        if (updatedFormula !== field.formula) {
+            await pool.query('UPDATE form_fields SET formula = $1 WHERE id = $2', [updatedFormula, field.id]);
+        }
+    }
+}
+
+function flattenActiveAssets(assets = []) {
+    return assets.flatMap((asset) => {
+        const batchRows = asset.batch_data || asset.batchData || [];
+        return batchRows.map((row) => ({
+            ...row,
+            __meta: {
+                subAccountName: asset.sub_account_name,
+                submittedAt: asset.submitted_at,
+                baseId: asset.base_id
+            }
+        }));
+    });
+}
+
+function flattenArchiveRecords(records = []) {
+    return records.flatMap((record) => {
+        const batchRows = record.batchData || record.batch_data || [];
+        return batchRows.map((row) => ({
+            ...row,
+            __meta: {
+                subAccountName: record.subAccountName,
+                submittedAt: record.submittedAt,
+                baseId: record.baseId
+            }
+        }));
+    });
+}
+
+async function streamFormWorkbook({ res, form, fields = [], rows = [], scope = 'active', meta = {} }) {
+    const workbook = new ExcelJS.Workbook();
+    workbook.created = new Date();
+    const worksheet = workbook.addWorksheet(scope === 'archive' ? `${form.name}-已归档` : `${form.name}-未归档`);
+
+    const safeFields = fields.map((field) => ({
+        ...field,
+        display_precision: typeof field.display_precision === 'number' ? field.display_precision : 2
+    }));
+
+    const headerRow = ['提交人', '提交时间', ...safeFields.map((field) => field.name || field.field_key || '字段')];
+    worksheet.addRow(headerRow);
+
+    rows.forEach((row) => {
+        const metaInfo = row.__meta || {};
+        const formattedRow = [
+            metaInfo.subAccountName || '',
+            metaInfo.submittedAt ? new Date(metaInfo.submittedAt) : ''
+        ];
+
+        safeFields.forEach((field) => {
+            const rawValue = row[field.id] ?? row[field.name] ?? '';
+            formattedRow.push(normalizeFieldValue(field, rawValue));
+        });
+
+        worksheet.addRow(formattedRow);
+    });
+
+    // Apply column formats
+    worksheet.getColumn(2).numFmt = 'yyyy-mm-dd hh:mm';
+    safeFields.forEach((field, index) => {
+        if (['number', 'formula'].includes(field.type)) {
+            worksheet.getColumn(index + 3).numFmt = getExcelNumericFormat(field.display_precision);
+        }
+    });
+
+    worksheet.columns.forEach((column) => {
+        let maxLength = 12;
+        column.eachCell({ includeEmpty: true }, (cell) => {
+            const cellValue = cell.value ?? '';
+            const length = cellValue && cellValue.text ? cellValue.text.length : cellValue.toString().length;
+            if (length > maxLength) {
+                maxLength = length;
+            }
+        });
+        column.width = Math.min(Math.max(maxLength + 2, 12), 40);
+    });
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const suffix = scope === 'archive' ? `_archived_v${meta.version || 'latest'}` : '_active';
+    const fileName = `${sanitizeFileName(form.name)}${suffix}_${timestamp}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    await workbook.xlsx.write(res);
+    res.end();
+}
+
+function normalizeFieldValue(field, rawValue) {
+    if (rawValue === null || rawValue === undefined) {
+        return '';
+    }
+
+    if (['number', 'formula'].includes(field.type)) {
+        const numericValue = Number(rawValue);
+        return Number.isFinite(numericValue) ? numericValue : 0;
+    }
+
+    return rawValue;
+}
+
+function getExcelNumericFormat(precision = 2) {
+    const safePrecision = Math.max(0, Math.min(6, Number(precision) || 0));
+    if (safePrecision === 0) {
+        return '0';
+    }
+    return `0.${'0'.repeat(safePrecision)}`;
+}
+
 // 辅助函数：获取最大order值
 async function getMaxOrder(formId) {
     const result = await pool.query(
@@ -316,6 +876,16 @@ async function getMaxOrder(formId) {
         [formId]
     );
     return result.rows[0]?.maxorder || -1;
+}
+
+function replaceStandaloneToken(formula = '', token, replacement) {
+    if (!token || !replacement || !formula) return formula;
+    const pattern = new RegExp(`(^|[^\\w\\u4e00-\\u9fa5\\.])(${escapeRegExp(token)})(?=$|[^\\w\\u4e00-\\u9fa5])`, 'g');
+    return formula.replace(pattern, (_, prefix, captured) => `${prefix}${replacement}`);
+}
+
+function escapeRegExp(string = '') {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export { router as formsRoutes };

@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { Settings, Users, Plus, Trash2, ChevronDown, Loader, ArrowUp, ArrowDown, GripVertical } from 'lucide-react';
+import { Settings, Users, BarChart3, Plus, Trash2, ChevronDown, Loader, ArrowUp, ArrowDown, GripVertical } from 'lucide-react';
 import { Button, Modal, useModal, InputGroup, Dropdown, LoadingScreen } from '../utils/UI';
 import { generateId } from '../utils/helpers';
 import { formsAPI } from '../utils/api';
 import UserManagementPanel from './UserManagementPanel';
+import ReportsPanel from './ReportsPanel';
 
 // 3a. 管理表格模板 (ManageFormsPanel)
 function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) {
@@ -13,6 +14,8 @@ function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [updatingFormId, setUpdatingFormId] = useState(null); // 正在更新的表单ID
     const confirmModal = useModal();
+    const [renamingForm, setRenamingForm] = useState(null);
+    const [renameValue, setRenameValue] = useState('');
 
     // 直接设置数据，避免触发useAPI的更新逻辑
     const setFormsData = useCallback((newForms) => {
@@ -118,6 +121,30 @@ function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) 
         }
     };
 
+    const handleRenameForm = async () => {
+        if (!renamingForm) return;
+        const trimmed = renameValue.trim();
+        if (!trimmed) {
+            setActionError('表格名称不能为空');
+            return;
+        }
+        if (trimmed === renamingForm.name) {
+            setRenamingForm(null);
+            return;
+        }
+        try {
+            await formsAPI.update(renamingForm.id, {
+                name: trimmed,
+                isActive: renamingForm.isActive
+            });
+            const refreshed = await formsAPI.getAll();
+            setFormsData(refreshed);
+            setRenamingForm(null);
+        } catch (err) {
+            setActionError(err.message || '重命名失败');
+        }
+    };
+
     if (loading) return <LoadingScreen message="加载表格模板中..." />;
     if (error) return <div className="text-red-500">加载表格模板失败: {error}</div>;
 
@@ -164,6 +191,13 @@ function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) 
                                 <Button size="sm" variant="outline" onClick={() => onEditFields(form.id)}>
                                     <Settings className="w-4 h-4 mr-1" /> 编辑字段
                                 </Button>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => { setRenamingForm(form); setRenameValue(form.name); }}
+                                    >
+                                        重命名
+                                    </Button>
                                 <Button
                                     size="sm"
                                     variant={form.isActive ? 'outline' : 'primary'}
@@ -195,6 +229,28 @@ function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) 
                     <div className="mt-6 flex justify-end space-x-3">
                         <Button variant="outline" onClick={confirmModal.close}>取消</Button>
                         <Button variant="danger" onClick={confirmModal.props.onConfirm}>确认删除</Button>
+                    </div>
+                </Modal>
+            )}
+
+            {renamingForm && (
+                <Modal
+                    isOpen={!!renamingForm}
+                    onClose={() => setRenamingForm(null)}
+                    title={`重命名表格：${renamingForm.name}`}
+                >
+                    <div className="space-y-4">
+                        <input
+                            type="text"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="输入新的表格名称"
+                        />
+                        <div className="flex justify-end space-x-3">
+                            <Button variant="outline" onClick={() => setRenamingForm(null)}>取消</Button>
+                            <Button variant="primary" onClick={handleRenameForm}>保存</Button>
+                        </div>
                     </div>
                 </Modal>
             )}
@@ -232,10 +288,13 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
     const [newFieldName, setNewFieldName] = useState('');
     const [newFieldType, setNewFieldType] = useState('text');
     const [newFieldFormula, setNewFieldFormula] = useState('');
+    const [newFieldPrecision, setNewFieldPrecision] = useState(2);
+    const [newFieldOptionsInput, setNewFieldOptionsInput] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [actionError, setActionError] = useState(null);
     const [updatingFieldId, setUpdatingFieldId] = useState(null); // 正在更新的字段ID
     const confirmModal = useModal();
+    const [fieldEditor, setFieldEditor] = useState(null);
 
     // For drag and drop
     const [draggedFieldId, setDraggedFieldId] = useState(null);
@@ -297,6 +356,19 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                 formula: newFieldType === 'formula' ? newFieldFormula.trim() : undefined
             };
 
+            if (newFieldType === 'number' || newFieldType === 'formula') {
+                fieldData.displayPrecision = Number(newFieldPrecision);
+            }
+            if (newFieldType === 'select') {
+                const optionsList = parseOptionsInput(newFieldOptionsInput);
+                if (optionsList.length === 0) {
+                    setActionError("请至少添加一个下拉选项");
+                    setIsSubmitting(false);
+                    return;
+                }
+                fieldData.options = optionsList;
+            }
+
             await formsAPI.addField(form.id, fieldData);
 
             // 重新加载所有表单数据以确保同步
@@ -306,6 +378,8 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
             setNewFieldName('');
             setNewFieldType('text');
             setNewFieldFormula('');
+            setNewFieldPrecision(2);
+            setNewFieldOptionsInput('');
 
         } catch (err) {
             setActionError(err.message || "添加字段失败");
@@ -447,6 +521,81 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
             }));
     }, [selectedFormId, allForms, form]);
 
+    const handleFieldEditorChange = (key, value) => {
+        setFieldEditor(prev => prev ? {
+            ...prev,
+            values: {
+                ...prev.values,
+                [key]: value
+            }
+        } : prev);
+    };
+
+    const handleFieldEditorSave = async () => {
+        if (!fieldEditor) return;
+        const { original, values } = fieldEditor;
+        const updates = {};
+
+        const trimmedName = values.name.trim();
+        if (!trimmedName) {
+            setActionError('字段名称不能为空');
+            return;
+        }
+        if (trimmedName !== original.name) {
+            updates.name = trimmedName;
+        }
+
+        if (values.type && values.type !== original.type) {
+            updates.type = values.type;
+        }
+
+        if (values.type === 'formula') {
+            updates.formula = values.formula.trim();
+        } else if (original.type === 'formula' && values.type !== 'formula') {
+            updates.formula = null;
+        }
+
+        if (values.type === 'number' || values.type === 'formula') {
+            updates.displayPrecision = Number(values.displayPrecision);
+        }
+
+        if (values.type === 'select') {
+            const optionList = parseOptionsInput(values.optionsText);
+            if (optionList.length === 0) {
+                setActionError('下拉字段至少添加一个选项');
+                return;
+            }
+            updates.options = optionList;
+        } else if (original.type === 'select' && values.type !== 'select') {
+            updates.options = null;
+        }
+
+        if (Object.keys(updates).length === 0) {
+            setFieldEditor(null);
+            return;
+        }
+
+        setUpdatingFieldId(original.id);
+        try {
+            await formsAPI.updateField(form.id, original.id, updates);
+            const updatedForms = await formsAPI.getAll();
+            updateForms(() => updatedForms);
+            setFieldEditor(null);
+        } catch (err) {
+            setActionError(err.message || '更新字段失败');
+        } finally {
+            setUpdatingFieldId(null);
+        }
+    };
+
+    const parseOptionsInput = useCallback((input) => {
+        if (!input) return [];
+        return input
+            .split(/\n|,/)
+            .map(option => option.trim())
+            .filter(option => option.length > 0);
+    }, []);
+
     return (
         <div className="space-y-6">
             <div className="flex justify-between items-center pb-4 border-b border-gray-200">
@@ -481,7 +630,17 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                         <InputGroup label="字段类型" className="w-40">
                             <select
                                 value={newFieldType}
-                                onChange={(e) => { setNewFieldType(e.target.value); setNewFieldFormula(''); }}
+                                onChange={(e) => {
+                                    const value = e.target.value;
+                                    setNewFieldType(value);
+                                    setNewFieldFormula('');
+                                    if (value === 'number' || value === 'formula') {
+                                        setNewFieldPrecision(2);
+                                    }
+                                    if (value !== 'select') {
+                                        setNewFieldOptionsInput('');
+                                    }
+                                }}
                                 className="w-full pl-3 pr-10 py-2 border border-gray-300 rounded-md shadow-sm"
                             >
                                 <option value="text">文本 (Text)</option>
@@ -489,9 +648,38 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                                 <option value="date">日期 (Date)</option>
                                 <option value="textarea">长文本 (Textarea)</option>
                                 <option value="formula">公式计算 (Formula)</option>
+                                <option value="select">下拉单选 (Select)</option>
                             </select>
                         </InputGroup>
                     </div>
+
+                    {['number', 'formula'].includes(newFieldType) && (
+                        <InputGroup label="显示小数位数 (0-3)" className="w-40">
+                            <select
+                                value={newFieldPrecision}
+                                onChange={(e) => setNewFieldPrecision(Number(e.target.value))}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
+                            >
+                                {[0, 1, 2, 3].map(value => (
+                                    <option key={value} value={value}>
+                                        {value} 位
+                                    </option>
+                                ))}
+                            </select>
+                        </InputGroup>
+                    )}
+
+                    {newFieldType === 'select' && (
+                        <InputGroup label="下拉选项 (每行一个)">
+                            <textarea
+                                rows={4}
+                                value={newFieldOptionsInput}
+                                onChange={(e) => setNewFieldOptionsInput(e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
+                                placeholder="例如：&#10;草鱼&#10;鲫鱼&#10;罗非鱼"
+                            />
+                        </InputGroup>
+                    )}
 
                     {newFieldType === 'formula' && (
                         <div className="space-y-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
@@ -604,6 +792,22 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
                                             <Button
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => setFieldEditor({
+                                                    original: field,
+                                                    values: {
+                                                        name: field.name,
+                                                        type: field.type,
+                                                        formula: field.formula || '',
+                                                        displayPrecision: typeof field.displayPrecision === 'number' ? field.displayPrecision : 2,
+                                                        optionsText: Array.isArray(field.options) ? field.options.join('\n') : ''
+                                                    }
+                                                })}
+                                            >
+                                                编辑属性
+                                            </Button>
+                                            <Button
                                                 variant={field.active ? "outline" : "primary"}
                                                 onClick={() => toggleFieldStatus(field)}
                                                 size="sm"
@@ -645,6 +849,78 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                     </div>
                 </Modal>
             )}
+
+            {fieldEditor && (
+                <Modal
+                    isOpen={!!fieldEditor}
+                    onClose={() => setFieldEditor(null)}
+                    title={`编辑字段：${fieldEditor.original.name}`}
+                >
+                    <div className="space-y-4">
+                        <InputGroup label="字段名称">
+                            <input
+                                type="text"
+                                value={fieldEditor.values.name}
+                                onChange={(e) => handleFieldEditorChange('name', e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
+                            />
+                        </InputGroup>
+                        <InputGroup label="字段类型">
+                            <select
+                                value={fieldEditor.values.type}
+                                onChange={(e) => handleFieldEditorChange('type', e.target.value)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
+                            >
+                                <option value="text">文本 (Text)</option>
+                                <option value="number">数字 (Number)</option>
+                                <option value="date">日期 (Date)</option>
+                                <option value="textarea">长文本 (Textarea)</option>
+                                <option value="formula">公式计算 (Formula)</option>
+                                <option value="select">下拉单选 (Select)</option>
+                            </select>
+                        </InputGroup>
+                        {fieldEditor.values.type === 'formula' && (
+                            <InputGroup label="公式定义">
+                                <textarea
+                                    rows={4}
+                                    value={fieldEditor.values.formula}
+                                    onChange={(e) => handleFieldEditorChange('formula', e.target.value)}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm font-mono"
+                                />
+                            </InputGroup>
+                        )}
+                        {['number', 'formula'].includes(fieldEditor.values.type) && (
+                            <InputGroup label="显示小数位数 (0-3)">
+                                <select
+                                    value={fieldEditor.values.displayPrecision}
+                                    onChange={(e) => handleFieldEditorChange('displayPrecision', Number(e.target.value))}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
+                                >
+                                    {[0, 1, 2, 3].map(value => (
+                                        <option key={value} value={value}>
+                                            {value} 位
+                                        </option>
+                                    ))}
+                                </select>
+                            </InputGroup>
+                        )}
+                        {fieldEditor.values.type === 'select' && (
+                            <InputGroup label="下拉选项（每行一个）">
+                                <textarea
+                                    rows={4}
+                                    value={fieldEditor.values.optionsText}
+                                    onChange={(e) => handleFieldEditorChange('optionsText', e.target.value)}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
+                                />
+                            </InputGroup>
+                        )}
+                        <div className="flex justify-end space-x-3">
+                            <Button variant="outline" onClick={() => setFieldEditor(null)}>取消</Button>
+                            <Button variant="primary" onClick={handleFieldEditorSave}>保存</Button>
+                        </div>
+                    </div>
+                </Modal>
+            )}
         </div>
     );
 }
@@ -657,6 +933,7 @@ function SuperAdminPanel({ user, getCollectionHook }) {
     const tabs = [
         { id: 'manageForms', label: '管理表格模板', icon: Settings },
         { id: 'manageUsers', label: '管理用户', icon: Users },
+        { id: 'manageReports', label: '统计报表', icon: BarChart3 },
     ];
 
     // Find the form being edited
@@ -717,6 +994,12 @@ function SuperAdminPanel({ user, getCollectionHook }) {
                     />
                 )}
                 {activeTab === 'manageUsers' && <UserManagementPanel getCollectionHook={getCollectionHook} />}
+                {activeTab === 'manageReports' && (
+                    <ReportsPanel
+                        user={user}
+                        getCollectionHook={getCollectionHook}
+                    />
+                )}
             </div>
         </div>
     );

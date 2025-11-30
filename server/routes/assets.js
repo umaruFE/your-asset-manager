@@ -114,6 +114,19 @@ router.post('/', authenticateToken, async (req, res, next) => {
             return res.status(400).json({ error: 'Invalid request data' });
         }
 
+        // 检查表单状态
+        const formResult = await pool.query(
+            'SELECT name, archive_status FROM forms WHERE id = $1',
+            [formId]
+        );
+        if (formResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Form not found' });
+        }
+        const formRecord = formResult.rows[0];
+        if (formRecord.archive_status !== 'active') {
+            return res.status(400).json({ error: '当前表格已归档，无法继续录入数据' });
+        }
+
         // 检查提交权限
         if (req.user.role === 'base_handler') {
             // 基地经手人可以提交
@@ -141,7 +154,7 @@ router.post('/', authenticateToken, async (req, res, next) => {
             [
                 id,
                 formId,
-                formName,
+                formRecord.name || formName,
                 req.user.id,
                 req.user.name,
                 baseId,

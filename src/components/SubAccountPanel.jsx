@@ -1,11 +1,13 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
-import { Button, LoadingScreen, Modal, useModal, Plus, FileText, Database, Box, ChevronLeft, ChevronRight, X } from '../utils/UI';
+import { Button, LoadingScreen, Modal, useModal, Plus, FileText, Database, Box, ChevronLeft, ChevronRight, X, Archive } from '../utils/UI';
 import RegisterAssetsPanel from './RegisterAssetsPanel';
 import ViewFilesPanel from './ViewFilesPanel';
+import ArchivedDocumentsPanel from './ArchivedDocumentsPanel';
 
 const STATIC_TABS = {
     myAssets: { id: 'myAssets', label: '我的记录', icon: Box, type: 'static' },
     viewFiles: { id: 'viewFiles', label: '查看文件', icon: FileText, type: 'static' },
+    archivedDocs: { id: 'archivedDocs', label: '已归档文档', icon: Archive, type: 'static' },
 };
 
 export default function SubAccountPanel({ user, getCollectionHook }) {
@@ -126,6 +128,8 @@ export default function SubAccountPanel({ user, getCollectionHook }) {
             return <ViewMyAssetsPanel user={user} getCollectionHook={getCollectionHook} forms={availableForms} />;
         case 'viewFiles':
             return <ViewFilesPanel user={user} getCollectionHook={getCollectionHook} />;
+        case 'archivedDocs':
+            return <ArchivedDocumentsPanel user={user} getCollectionHook={getCollectionHook} />;
         default:
             return <div className="p-4 text-gray-500">无法加载此内容。</div>;
     }

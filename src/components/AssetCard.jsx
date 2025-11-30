@@ -1,5 +1,6 @@
 import React from 'react';
 import { FileText } from '../utils/UI';
+import { formatFieldValue } from '../utils/helpers';
 
 // 资产卡片组件
 export default function AssetCard({ asset, onClick }) {
@@ -38,8 +39,10 @@ export default function AssetCard({ asset, onClick }) {
     const titleField = asset.fieldsSnapshot?.find(f => f.type !== 'formula' && f.type !== 'textarea') || asset.fieldsSnapshot?.[0]; 
     const firstRecord = batchData?.[0] || {};
     
-    // 支持字段ID和字段名称两种格式
-    let title = asset.formName || '记录';
+    const rawTitleValue = titleField ? (firstRecord[titleField.id] ?? firstRecord[titleField.name]) : null;
+    const title = rawTitleValue !== undefined && rawTitleValue !== null
+        ? formatFieldValue(titleField, rawTitleValue)
+        : (asset.formName || '记录');
 
     return (
       <button 
@@ -96,25 +99,25 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
   }
   
   // 创建一个 字段ID -> 字段名称 的映射，以及 字段名称 -> 字段ID 的映射
-  const fieldIdToName = React.useMemo(() => {
+  const fieldIdToField = React.useMemo(() => {
       if (!asset.fieldsSnapshot || !Array.isArray(asset.fieldsSnapshot)) {
           return {};
       }
       return asset.fieldsSnapshot.reduce((acc, field) => {
         if (field && field.id && field.name) {
-        acc[field.id] = field.name;
+        acc[field.id] = field;
         }
         return acc;
       }, {});
   }, [asset.fieldsSnapshot]);
   
-  const fieldNameToId = React.useMemo(() => {
+  const fieldNameToField = React.useMemo(() => {
       if (!asset.fieldsSnapshot || !Array.isArray(asset.fieldsSnapshot)) {
           return {};
       }
       return asset.fieldsSnapshot.reduce((acc, field) => {
         if (field && field.id && field.name) {
-            acc[field.name] = field.id;
+            acc[field.name] = field;
         }
         return acc;
       }, {});
@@ -140,7 +143,7 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
       // 判断batchData中的键是字段ID还是字段名称
       const firstRow = batchData[0];
       const firstKey = firstRow ? Object.keys(firstRow)[0] : null;
-      const isUsingFieldNames = firstKey && fieldNameToId[firstKey]; // 如果第一个键能在名称映射中找到，说明使用的是字段名称
+      const isUsingFieldNames = firstKey && fieldNameToField[firstKey]; // 如果第一个键能在名称映射中找到，说明使用的是字段名称
       
       // 保持快照中的顺序
       if (asset.fieldsSnapshot && Array.isArray(asset.fieldsSnapshot)) {
@@ -159,7 +162,7 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
       
       // 如果没有快照，返回所有在数据中出现的键
       return Array.from(keySet);
-  }, [asset.batchData, asset.batch_data, asset.fieldsSnapshot, fieldNameToId]);
+  }, [asset.batchData, asset.batch_data, asset.fieldsSnapshot, fieldNameToField]);
 
   return (
     <div className={`fixed inset-0 z-50 overflow-y-auto ${isOpen ? 'block' : 'hidden'}`}>
@@ -198,12 +201,12 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
                       <thead className="bg-gray-50">
                         <tr>
                             {allFieldKeysInBatch.map(fieldKey => {
-                              // fieldKey可能是字段ID或字段名称
-                              const fieldName = fieldIdToName[fieldKey] || fieldKey; // 如果是ID，转换为名称；如果是名称，直接使用
+                              const fieldDef = fieldIdToField[fieldKey] || fieldNameToField[fieldKey];
+                              const fieldName = fieldDef?.name || fieldKey;
                               return (
                                 <th key={fieldKey} scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                   {fieldName || '未知字段'}
-                            </th>
+                                </th>
                               );
                             })}
                         </tr>
@@ -211,11 +214,18 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
                       <tbody className="bg-white divide-y divide-gray-200">
                           {batchData.map((row, rowIndex) => (
                           <tr key={rowIndex}>
-                              {allFieldKeysInBatch.map(fieldKey => (
-                                <td key={fieldKey} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                                  {row[fieldKey] !== undefined && row[fieldKey] !== null ? String(row[fieldKey]) : 'N/A'}
-                              </td>
-                            ))}
+                              {allFieldKeysInBatch.map(fieldKey => {
+                                const fieldDef = fieldIdToField[fieldKey] || fieldNameToField[fieldKey];
+                                const rawValue = row[fieldKey];
+                                const displayValue = rawValue !== undefined && rawValue !== null
+                                    ? formatFieldValue(fieldDef, rawValue)
+                                    : 'N/A';
+                                return (
+                                  <td key={fieldKey} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                    {displayValue}
+                                  </td>
+                                );
+                              })}
                           </tr>
                         ))}
                       </tbody>

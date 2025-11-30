@@ -1,28 +1,16 @@
 import express from 'express';
 import { pool } from '../config/database.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { generateId, toCamelCaseObject } from '../utils/helpers.js';
 
 const router = express.Router();
 
-// 获取所有报表（用户可以看自己创建的，超级管理员可以看所有）
+// 获取所有报表（超级管理员可以查看全部，其余按照共享范围过滤）
 router.get('/', authenticateToken, async (req, res, next) => {
     try {
-        let query = 'SELECT * FROM reports WHERE 1=1';
-        const params = [];
-        let paramIndex = 1;
-
-        // 非超级管理员只能看自己创建的
-        if (req.user.role !== 'superadmin') {
-            query += ` AND created_by = $${paramIndex++}`;
-            params.push(req.user.id);
-        }
-
-        query += ' ORDER BY created_at DESC';
-
-        const result = await pool.query(query, params);
-        // 转换字段名从下划线到驼峰
-        const camelRows = result.rows.map(row => toCamelCaseObject(row));
+        const result = await pool.query('SELECT * FROM reports ORDER BY created_at DESC');
+        const filtered = result.rows.filter(report => canAccessReport(report, req.user));
+        const camelRows = filtered.map(row => toCamelCaseObject(row));
         res.json(camelRows);
     } catch (error) {
         next(error);
@@ -40,8 +28,7 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
 
         const report = result.rows[0];
 
-        // 非超级管理员只能看自己创建的
-        if (req.user.role !== 'superadmin' && report.created_by !== req.user.id) {
+        if (!canAccessReport(report, req.user)) {
             return res.status(403).json({ error: 'Access denied' });
         }
 
@@ -52,10 +39,10 @@ router.get('/:id', authenticateToken, async (req, res, next) => {
     }
 });
 
-// 创建报表
-router.post('/', authenticateToken, async (req, res, next) => {
+// 创建报表（仅超级管理员）
+router.post('/', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
-        const { name, description, config } = req.body;
+        const { name, description, config, accessRules } = req.body;
 
         if (!name || !config) {
             return res.status(400).json({ error: 'Name and config are required' });
@@ -66,10 +53,11 @@ router.post('/', authenticateToken, async (req, res, next) => {
             return res.status(400).json({ error: 'Invalid config: selectedForms must be an array' });
         }
 
+        const rules = normalizeAccessRules(accessRules);
         const id = generateId();
         await pool.query(
-            'INSERT INTO reports (id, name, description, created_by, config) VALUES ($1, $2, $3, $4, $5)',
-            [id, name, description || null, req.user.id, JSON.stringify(config)]
+            'INSERT INTO reports (id, name, description, created_by, config, access_rules) VALUES ($1, $2, $3, $4, $5, $6)',
+            [id, name, description || null, req.user.id, JSON.stringify(config), JSON.stringify(rules)]
         );
 
         const result = await pool.query('SELECT * FROM reports WHERE id = $1', [id]);
@@ -80,20 +68,15 @@ router.post('/', authenticateToken, async (req, res, next) => {
     }
 });
 
-// 更新报表
-router.put('/:id', authenticateToken, async (req, res, next) => {
+// 更新报表（仅超级管理员）
+router.put('/:id', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
-        const { name, description, config } = req.body;
+        const { name, description, config, accessRules } = req.body;
 
         // 检查报表是否存在和权限
         const checkResult = await pool.query('SELECT * FROM reports WHERE id = $1', [req.params.id]);
         if (checkResult.rows.length === 0) {
             return res.status(404).json({ error: 'Report not found' });
-        }
-
-        const report = checkResult.rows[0];
-        if (req.user.role !== 'superadmin' && report.created_by !== req.user.id) {
-            return res.status(403).json({ error: 'Access denied' });
         }
 
         const updateFields = [];
@@ -111,6 +94,11 @@ router.put('/:id', authenticateToken, async (req, res, next) => {
         if (config !== undefined) {
             updateFields.push(`config = $${paramIndex++}`);
             updateValues.push(JSON.stringify(config));
+        }
+        if (accessRules !== undefined) {
+            const rules = normalizeAccessRules(accessRules);
+            updateFields.push(`access_rules = $${paramIndex++}`);
+            updateValues.push(JSON.stringify(rules));
         }
 
         if (updateFields.length === 0) {
@@ -132,18 +120,12 @@ router.put('/:id', authenticateToken, async (req, res, next) => {
     }
 });
 
-// 删除报表
-router.delete('/:id', authenticateToken, async (req, res, next) => {
+// 删除报表（仅超级管理员）
+router.delete('/:id', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
-        // 检查权限
         const checkResult = await pool.query('SELECT * FROM reports WHERE id = $1', [req.params.id]);
         if (checkResult.rows.length === 0) {
             return res.status(404).json({ error: 'Report not found' });
-        }
-
-        const report = checkResult.rows[0];
-        if (req.user.role !== 'superadmin' && report.created_by !== req.user.id) {
-            return res.status(403).json({ error: 'Access denied' });
         }
 
         await pool.query('DELETE FROM reports WHERE id = $1', [req.params.id]);
@@ -164,8 +146,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
 
         const report = result.rows[0];
 
-        // 检查权限
-        if (req.user.role !== 'superadmin' && report.created_by !== req.user.id) {
+        if (!canAccessReport(report, req.user)) {
             return res.status(403).json({ error: 'Access denied' });
         }
 
@@ -554,7 +535,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
 
         res.json({
             report: report,
-            data: queryResult.rows,
+            data: applySortOrders(queryResult.rows, config.sortOrders),
             total: queryResult.rows.length
         });
     } catch (error) {
@@ -632,4 +613,75 @@ function translateDatabaseError(error) {
     };
 }
 
+function normalizeAccessRules(rules) {
+    const defaultRules = {
+        roles: ['base_manager', 'company_asset', 'company_finance'],
+        users: []
+    };
+
+    if (!rules || typeof rules !== 'object') {
+        return defaultRules;
+    }
+
+    const normalized = {
+        roles: Array.isArray(rules.roles)
+            ? Array.from(new Set(rules.roles.filter(role => typeof role === 'string' && role.trim().length > 0)))
+            : defaultRules.roles,
+        users: Array.isArray(rules.users)
+            ? Array.from(new Set(rules.users.filter(userId => typeof userId === 'string' && userId.trim().length > 0)))
+            : []
+    };
+
+    if (normalized.roles.length === 0) {
+        normalized.roles = defaultRules.roles;
+    }
+
+    return normalized;
+}
+
+function canAccessReport(report, user) {
+    if (!report) return false;
+    if (user.role === 'superadmin' || report.created_by === user.id) {
+        return true;
+    }
+
+    const rules = normalizeAccessRules(report.access_rules);
+    return rules.roles.includes(user.role) || rules.users.includes(user.id);
+}
+
 export { router as reportsRoutes };
+
+function applySortOrders(rows = [], sortOrders = []) {
+    if (!Array.isArray(sortOrders) || sortOrders.length === 0) {
+        return rows;
+    }
+    const validOrders = sortOrders.filter(order => order && order.field);
+    if (validOrders.length === 0) {
+        return rows;
+    }
+    const sortedRows = [...rows];
+    sortedRows.sort((a, b) => {
+        for (const order of validOrders) {
+            const field = order.field;
+            const direction = (order.direction || 'asc').toLowerCase();
+            const valA = a[field];
+            const valB = b[field];
+
+            if (valA == null && valB == null) continue;
+            if (valA == null) return direction === 'asc' ? 1 : -1;
+            if (valB == null) return direction === 'asc' ? -1 : 1;
+
+            if (typeof valA === 'number' && typeof valB === 'number') {
+                if (valA === valB) continue;
+                return direction === 'asc' ? valA - valB : valB - valA;
+            }
+
+            const comparison = String(valA).localeCompare(String(valB), 'zh');
+            if (comparison !== 0) {
+                return direction === 'asc' ? comparison : -comparison;
+            }
+        }
+        return 0;
+    });
+    return sortedRows;
+}

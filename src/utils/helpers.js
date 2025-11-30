@@ -41,7 +41,7 @@ export const loadInitialCollections = () => {
 export const calculateFormula = (formula, rowData, fields, options = {}) => {
     if (!formula || typeof formula !== 'string') return '';
     
-    const { allForms = [], allAssets = [], currentFormId = null } = options;
+    const { allForms = [], allAssets = [], currentFormId = null, targetPrecision = 2 } = options;
     
     // Create a map of field names to their current numerical value (current form)
     const valueMap = fields.reduce((acc, field) => {
@@ -88,7 +88,7 @@ export const calculateFormula = (formula, rowData, fields, options = {}) => {
     // Regex to identify field names in the formula
     // Updated to support "表名.字段名" format
     // This regex looks for sequences that could be field names or "表名.字段名"
-    const fieldNameRegex = /([a-zA-Z0-9\u4e00-\u9fa5\s\(\)\[\]\{\}]+(?:\.[a-zA-Z0-9\u4e00-\u9fa5\s\(\)\[\]\{\}]+)?)/g; 
+    const fieldNameRegex = /([a-zA-Z0-9\u4e00-\u9fa5\s\(\)\[\]\{\}\uFF08\uFF09]+(?:\.[a-zA-Z0-9\u4e00-\u9fa5\s\(\)\[\]\{\}\uFF08\uFF09]+)?)/g; 
     
     let calculationString = formula.replace(fieldNameRegex, (match) => {
         const trimmedMatch = match.trim();
@@ -115,8 +115,8 @@ export const calculateFormula = (formula, rowData, fields, options = {}) => {
         
         if (isNaN(result) || !isFinite(result)) return 'Error: Calculation failed';
         
-        // Round to 2 decimal places for financial/quantity results
-        return parseFloat(result.toFixed(2)); 
+        const precision = Math.max(0, Math.min(6, Number(targetPrecision) || 2));
+        return parseFloat(Number(result).toFixed(precision));
     } catch (e) {
         // Catch syntax or runtime errors during calculation
         return 'Error: ' + e.message;
@@ -182,6 +182,28 @@ export function downloadFile(file) {
   } else {
     alert('文件不可下载');
   }
+}
+
+export function formatFieldValue(field, value) {
+  if (value === null || value === undefined) return '';
+  if (!field) return value;
+  if (['number', 'formula'].includes(field.type)) {
+    const precision = Math.max(0, Math.min(6, Number(field.displayPrecision ?? 2)));
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return value;
+    }
+    return numericValue.toFixed(precision);
+  }
+  return value;
+}
+
+export function getStepFromPrecision(precision = 0) {
+  const safePrecision = Math.max(0, Math.min(6, Number(precision) || 0));
+  if (safePrecision === 0) {
+    return '1';
+  }
+  return Number(`0.${'0'.repeat(safePrecision - 1)}1`);
 }
 
 // 数据验证函数

@@ -215,5 +215,6 @@ export {
   Check,
   UploadCloud,
   Box,
+  Archive,
   Loader as Spinner
 } from 'lucide-react';

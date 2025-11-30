@@ -15,6 +15,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     const [isExecuting, setIsExecuting] = useState(false);
     const [executionResult, setExecutionResult] = useState(null);
     const [loadingReport, setLoadingReport] = useState(false);
+    const [sortOrders, setSortOrders] = useState([]);
     const saveModal = useModal();
 
     // 如果是编辑模式，加载报表数据
@@ -29,6 +30,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             setSelectedFields([]);
             setAggregations([]);
             setCalculations([]);
+            setSortOrders([]);
             setExecutionResult(null);
         }
     }, [editingReport]);
@@ -132,6 +134,17 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                 });
                 setCalculations(calcsWithIds);
             }
+
+            if (config.sortOrders && Array.isArray(config.sortOrders)) {
+                const normalizedSorts = config.sortOrders.map((order, index) => ({
+                    id: order.id || `sort_${Date.now()}_${index}`,
+                    field: order.field || '',
+                    direction: order.direction || 'asc'
+                }));
+                setSortOrders(normalizedSorts);
+            } else {
+                setSortOrders([]);
+            }
         } catch (error) {
             console.error('Failed to load report data:', error);
             alert('加载报表数据失败: ' + error.message);
@@ -161,6 +174,37 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         });
         return fields;
     }, [selectedForms, forms]);
+
+    const availableResultColumns = useMemo(() => {
+        const columns = [];
+        selectedFields.forEach(field => {
+            const label = field.fieldName || field.fieldId || '字段';
+            columns.push({
+                key: label,
+                label
+            });
+        });
+        aggregations.forEach(agg => {
+            const label = `${agg.fieldName || agg.fieldId || '字段'}_${agg.function || 'SUM'}`;
+            columns.push({
+                key: label,
+                label
+            });
+        });
+        calculations.forEach(calc => {
+            if (calc.name) {
+                columns.push({
+                    key: calc.name,
+                    label: calc.name
+                });
+            }
+        });
+        return columns;
+    }, [selectedFields, aggregations, calculations]);
+
+    useEffect(() => {
+        setSortOrders(prev => prev.filter(order => availableResultColumns.some(col => col.key === order.field)));
+    }, [availableResultColumns]);
 
     // 切换表单选择
     const toggleForm = (formId) => {
@@ -315,6 +359,29 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         setCalculations(prev => prev.filter(calc => calc.id !== id));
     };
 
+    const addSortOrder = () => {
+        if (sortOrders.length >= 3) return;
+        const defaultColumn = availableResultColumns[0]?.key || '';
+        setSortOrders(prev => [
+            ...prev,
+            {
+                id: Date.now().toString(),
+                field: defaultColumn,
+                direction: 'asc'
+            }
+        ]);
+    };
+
+    const updateSortOrder = (id, updates) => {
+        setSortOrders(prev => prev.map(order =>
+            order.id === id ? { ...order, ...updates } : order
+        ));
+    };
+
+    const removeSortOrder = (id) => {
+        setSortOrders(prev => prev.filter(order => order.id !== id));
+    };
+
     // 保存报表
     const handleSave = async () => {
         if (!reportName.trim()) {
@@ -334,7 +401,12 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                 selectedFields,
                 aggregations,
                 calculations,
-                filters: {}
+                filters: {},
+                sortOrders: sortOrders.map(({ field, direction, id }) => ({
+                    id,
+                    field,
+                    direction
+                }))
             };
 
             if (editingReport && editingReport.id) {
@@ -382,7 +454,12 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                 selectedFields,
                 aggregations,
                 calculations,
-                filters: {}
+                filters: {},
+                sortOrders: sortOrders.map(({ field, direction, id }) => ({
+                    id,
+                    field,
+                    direction
+                }))
             };
 
             let reportId;
@@ -706,6 +783,56 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                     ))}
                 </div>
             </div>
+
+            {/* 排序设置 */}
+            {availableResultColumns.length > 0 && (
+                <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                        <h3 className="text-lg font-semibold text-gray-700">5. 排序设置</h3>
+                        <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={addSortOrder}
+                            disabled={sortOrders.length >= 3 || availableResultColumns.length === 0}
+                        >
+                            <Plus className="w-4 h-4 mr-1" /> 添加排序
+                        </Button>
+                    </div>
+                    {sortOrders.length === 0 ? (
+                        <p className="text-sm text-gray-500">尚未设置排序。最多可配置三个排序优先级。</p>
+                    ) : (
+                        <div className="space-y-3">
+                            {sortOrders.map((order, index) => (
+                                <div key={order.id} className="flex flex-col md:flex-row md:items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                                    <span className="text-sm font-medium text-gray-600">第 {index + 1} 排序</span>
+                                    <select
+                                        value={order.field}
+                                        onChange={(e) => updateSortOrder(order.id, { field: e.target.value })}
+                                        className="flex-1 px-3 py-2 border rounded-md text-sm"
+                                    >
+                                        {availableResultColumns.map(column => (
+                                            <option key={column.key} value={column.key}>
+                                                {column.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <select
+                                        value={order.direction}
+                                        onChange={(e) => updateSortOrder(order.id, { direction: e.target.value })}
+                                        className="px-3 py-2 border rounded-md text-sm"
+                                    >
+                                        <option value="asc">升序</option>
+                                        <option value="desc">降序</option>
+                                    </select>
+                                    <Button size="sm" variant="danger" onClick={() => removeSortOrder(order.id)}>
+                                        <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* 操作按钮 */}
             <div className="flex justify-end space-x-3 pt-4 border-t">

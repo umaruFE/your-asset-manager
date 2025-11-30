@@ -48,8 +48,13 @@ CREATE TABLE IF NOT EXISTS forms (
     id VARCHAR(50) PRIMARY KEY,
     name VARCHAR(200) NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
+    archive_status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (archive_status IN ('active', 'archived')),
+    archive_version INTEGER NOT NULL DEFAULT 0,
+    archived_at TIMESTAMP,
+    archived_by VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (archived_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_forms_is_active ON forms(is_active);
@@ -57,6 +62,10 @@ CREATE INDEX IF NOT EXISTS idx_forms_is_active ON forms(is_active);
 COMMENT ON TABLE forms IS '表单模板表';
 COMMENT ON COLUMN forms.name IS '表单名称';
 COMMENT ON COLUMN forms.is_active IS '是否激活';
+COMMENT ON COLUMN forms.archive_status IS '当前状态：active(未归档)/archived(已归档)';
+COMMENT ON COLUMN forms.archive_version IS '归档版本计数';
+COMMENT ON COLUMN forms.archived_at IS '最近一次归档时间';
+COMMENT ON COLUMN forms.archived_by IS '最近一次归档人';
 
 -- 4. 用户表单权限表（依赖 users 和 forms）
 CREATE TABLE IF NOT EXISTS user_form_permissions (
@@ -80,31 +89,67 @@ COMMENT ON TABLE user_form_permissions IS '用户表单权限表';
 CREATE TABLE IF NOT EXISTS form_fields (
     id VARCHAR(50) PRIMARY KEY,
     form_id VARCHAR(50) NOT NULL,
+    field_key VARCHAR(100) NOT NULL DEFAULT uuid_generate_v4(),
     name VARCHAR(100) NOT NULL,
-    type VARCHAR(20) NOT NULL CHECK (type IN ('text', 'number', 'date', 'textarea', 'formula')),
+    type VARCHAR(20) NOT NULL CHECK (type IN ('text', 'number', 'date', 'textarea', 'formula', 'select')),
+    display_precision SMALLINT DEFAULT 0,
     active BOOLEAN DEFAULT TRUE,
     "order" INTEGER DEFAULT 0,
     formula TEXT,
+    options JSONB,
     history JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE
+    FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
+    UNIQUE(form_id, field_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_form_fields_form_id ON form_fields(form_id);
 CREATE INDEX IF NOT EXISTS idx_form_fields_active ON form_fields(active);
 CREATE INDEX IF NOT EXISTS idx_form_fields_order ON form_fields("order");
+CREATE INDEX IF NOT EXISTS idx_form_fields_field_key ON form_fields(field_key);
 
 COMMENT ON TABLE form_fields IS '表单字段表';
 COMMENT ON COLUMN form_fields.form_id IS '所属表单ID';
+COMMENT ON COLUMN form_fields.field_key IS '字段的稳定标识，用于引用公式';
 COMMENT ON COLUMN form_fields.name IS '字段名称';
 COMMENT ON COLUMN form_fields.type IS '字段类型';
+COMMENT ON COLUMN form_fields.display_precision IS '数字字段默认展示小数位数';
+COMMENT ON COLUMN form_fields.options IS '选项列表（用于下拉单选等）';
 COMMENT ON COLUMN form_fields.active IS '是否激活';
 COMMENT ON COLUMN form_fields."order" IS '排序顺序';
 COMMENT ON COLUMN form_fields.formula IS '公式（仅formula类型）';
 COMMENT ON COLUMN form_fields.history IS '历史记录';
 
--- 6. 资产记录表（依赖 forms, users, bases）
+-- 6. 归档记录表（依赖 forms, users）
+CREATE TABLE IF NOT EXISTS form_archives (
+    id VARCHAR(50) PRIMARY KEY,
+    form_id VARCHAR(50) NOT NULL,
+    form_name VARCHAR(200) NOT NULL,
+    version INTEGER NOT NULL,
+    archived_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    archived_by VARCHAR(50),
+    file_path VARCHAR(500),
+    file_type VARCHAR(20) DEFAULT 'json',
+    fields_snapshot JSONB NOT NULL,
+    data_snapshot JSONB NOT NULL,
+    metadata JSONB,
+    FOREIGN KEY (form_id) REFERENCES forms(id) ON DELETE CASCADE,
+    FOREIGN KEY (archived_by) REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE(form_id, version)
+);
+
+COMMENT ON TABLE form_archives IS '表单归档记录表';
+COMMENT ON COLUMN form_archives.version IS '归档版本号，从1递增';
+COMMENT ON COLUMN form_archives.fields_snapshot IS '归档时的字段定义快照';
+COMMENT ON COLUMN form_archives.data_snapshot IS '归档时的数据快照（JSON）';
+COMMENT ON COLUMN form_archives.file_path IS '归档生成的文件路径';
+COMMENT ON COLUMN form_archives.metadata IS '归档统计信息';
+
+CREATE INDEX IF NOT EXISTS idx_form_archives_form_id ON form_archives(form_id);
+CREATE INDEX IF NOT EXISTS idx_form_archives_archived_at ON form_archives(archived_at);
+
+-- 7. 资产记录表（依赖 forms, users, bases）
 CREATE TABLE IF NOT EXISTS assets (
     id VARCHAR(50) PRIMARY KEY,
     form_id VARCHAR(50) NOT NULL,
@@ -166,6 +211,7 @@ CREATE TABLE IF NOT EXISTS reports (
     description TEXT,
     created_by VARCHAR(50) NOT NULL,
     config JSONB NOT NULL, -- 报表配置：选择的表、字段、聚合函数等
+    access_rules JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
@@ -178,6 +224,7 @@ COMMENT ON COLUMN reports.name IS '报表名称';
 COMMENT ON COLUMN reports.description IS '报表描述';
 COMMENT ON COLUMN reports.created_by IS '创建者ID';
 COMMENT ON COLUMN reports.config IS '报表配置JSON';
+COMMENT ON COLUMN reports.access_rules IS '访问控制: roles/users';
 
 -- 创建更新updated_at的触发器函数
 CREATE OR REPLACE FUNCTION update_updated_at_column()

@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from 'react';
-import { LoadingScreen } from '../utils/UI';
+import { LoadingScreen, Button } from '../utils/UI';
 import AssetCard from './AssetCard';
 import { ViewAssetDetailModal } from './AssetCard';
-import { Grid, List } from 'lucide-react';
+import { Grid, List, Download } from 'lucide-react';
+import { formsAPI } from '../utils/api';
 
 export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
   const { data: assets, loading: assetsLoading, error: assetsError } = getCollectionHook('assets');
@@ -12,6 +13,7 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
   const [selectedFormId, setSelectedFormId] = useState('all');
   const [selectedSubAccountId, setSelectedSubAccountId] = useState('all');
   const [viewMode, setViewMode] = useState('cards'); // 'cards' or 'table'
+  const [downloadingFormId, setDownloadingFormId] = useState(null);
 
   const subAccounts = useMemo(() => {
     if (!allAppUsers || !Array.isArray(allAppUsers)) return [];
@@ -46,6 +48,11 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
 
   const [selectedAsset, setSelectedAsset] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [exportError, setExportError] = useState(null);
+
+  React.useEffect(() => {
+    setExportError(null);
+  }, [selectedFormId]);
   
   const handleCardClick = (asset) => {
     setSelectedAsset(asset);
@@ -57,6 +64,32 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
     setSelectedAsset(null);
   };
 
+  const handleExportExcel = async () => {
+    if (selectedFormId === 'all') {
+        setExportError('请先选择一个具体的表格再导出。');
+        return;
+    }
+    try {
+        setExportError(null);
+        setDownloadingFormId(selectedFormId);
+        const blob = await formsAPI.exportData(selectedFormId, { scope: 'active' });
+        const formName = formIdToName[selectedFormId] || '表格';
+        const fileName = `${formName}_未归档.xlsx`;
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+    } catch (err) {
+        setExportError(err.message || '导出失败，请重试');
+    } finally {
+        setDownloadingFormId(null);
+    }
+  };
+
   if (assetsLoading || usersLoading) {
     return <LoadingScreen message="正在加载所有记录数据..." />;
   }
@@ -66,8 +99,11 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
   
   return (
       <div className="space-y-6">
-        <div className="flex justify-between items-center">
-          <h2 className="text-2xl font-semibold text-gray-800">汇总查看记录</h2>
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold text-gray-800">汇总查看记录</h2>
+            <p className="text-sm text-gray-500 mt-1">筛选经手人或表格后，可导出未归档Excel。</p>
+          </div>
           {/* 视图切换按钮 */}
           <div className="flex gap-2 border border-gray-300 rounded-lg p-1">
             <button
@@ -96,7 +132,8 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
         </div>
         
         {/* 筛选器 */}
-        <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between space-y-4 lg:space-y-0">
+            <div className="flex flex-col sm:flex-row sm:space-x-4 space-y-4 sm:space-y-0">
             <div className="max-w-xs w-full">
                <label htmlFor="form-filter" className="block text-sm font-medium text-gray-700 mb-1">
                  筛选表格
@@ -131,6 +168,20 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
                </select>
              </div>
             )}
+            </div>
+            <div className="flex items-center space-x-3">
+                {exportError && (
+                    <span className="text-sm text-red-500">{exportError}</span>
+                )}
+                <Button
+                    variant="outline"
+                    onClick={handleExportExcel}
+                    disabled={selectedFormId === 'all' || downloadingFormId === selectedFormId}
+                >
+                    <Download className="w-4 h-4 mr-2" />
+                    {downloadingFormId === selectedFormId ? '导出中...' : '导出未归档Excel'}
+                </Button>
+            </div>
         </div>
 
         {/* 内容区域 */}

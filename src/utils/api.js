@@ -164,6 +164,24 @@ export const formsAPI = {
         });
     },
 
+    archive: async (id, options = {}) => {
+        return await apiRequest(`/forms/${id}/archive`, {
+            method: 'POST',
+            body: JSON.stringify(options),
+        });
+    },
+
+    archiveBatch: async (formIds, options = {}) => {
+        return await apiRequest('/forms/archive/batch', {
+            method: 'POST',
+            body: JSON.stringify({ formIds, ...options }),
+        });
+    },
+
+    getArchives: async (id) => {
+        return await apiRequest(`/forms/${id}/archives`);
+    },
+
     // 字段管理
     addField: async (formId, fieldData) => {
         return await apiRequest(`/forms/${formId}/fields`, {
@@ -190,6 +208,23 @@ export const formsAPI = {
         return await apiRequest(`/forms/${formId}/fields/${fieldId}`, {
             method: 'DELETE',
         });
+    },
+
+    exportData: async (formId, params = {}) => {
+        const token = getToken();
+        const query = new URLSearchParams();
+        if (params.scope) query.append('scope', params.scope);
+        if (params.archiveId) query.append('archiveId', params.archiveId);
+        const response = await fetch(`${API_BASE_URL}/forms/${formId}/export${query.toString() ? `?${query}` : ''}`, {
+            headers: {
+                ...(token && { Authorization: `Bearer ${token}` })
+            }
+        });
+        if (!response.ok) {
+            const message = await response.text();
+            throw new Error(message || '导出失败');
+        }
+        return await response.blob();
     },
 };
 
@@ -311,6 +346,6 @@ export const permissionsAPI = {
 };
 
 // 导出工具函数
-export { getToken, setToken, removeToken };
+export { getToken, setToken, removeToken, API_BASE_URL };
 
 
