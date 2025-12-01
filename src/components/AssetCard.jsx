@@ -124,7 +124,40 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
   }, [asset.fieldsSnapshot]);
   
   // 支持 batchData (camelCase) 和 batch_data (snake_case)
-  const batchData = asset.batchData || asset.batch_data || [];
+  // 确保数据是数组格式
+  let batchData = asset.batchData || asset.batch_data || [];
+  
+  // 如果batchData是字符串，尝试解析为JSON
+  if (typeof batchData === 'string') {
+      try {
+          batchData = JSON.parse(batchData);
+      } catch (e) {
+          console.error('解析batchData失败:', e);
+          batchData = [];
+      }
+  }
+  
+  // 确保batchData是数组
+  if (!Array.isArray(batchData)) {
+      console.warn('batchData不是数组格式:', batchData);
+      batchData = [];
+  }
+  
+  // 调试信息
+  React.useEffect(() => {
+      if (isOpen) {
+          console.log('=== 记录详情调试信息 ===');
+          console.log('Asset ID:', asset.id);
+          console.log('Form ID:', asset.formId);
+          console.log('Form Name:', asset.formName);
+          console.log('batchData类型:', typeof batchData);
+          console.log('batchData是否为数组:', Array.isArray(batchData));
+          console.log('batchData长度:', batchData.length);
+          console.log('batchData内容:', batchData);
+          console.log('fieldsSnapshot长度:', asset.fieldsSnapshot?.length || 0);
+          console.log('========================');
+      }
+  }, [isOpen, asset.id, batchData.length]);
   
   // 获取所有在快照中出现过的字段 (用于表头)
   // 支持两种格式：字段ID作为键，或字段名称作为键
@@ -196,40 +229,45 @@ export function ViewAssetDetailModal({ asset, isOpen, onClose }) {
                   )}
                   
                   {allFieldKeysInBatch.length > 0 && batchData && batchData.length > 0 ? (
-                  <div className="overflow-x-auto border border-gray-200 rounded-lg mt-4">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        <tr>
-                            {allFieldKeysInBatch.map(fieldKey => {
-                              const fieldDef = fieldIdToField[fieldKey] || fieldNameToField[fieldKey];
-                              const fieldName = fieldDef?.name || fieldKey;
-                              return (
-                                <th key={fieldKey} scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                  {fieldName || '未知字段'}
-                                </th>
-                              );
-                            })}
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                          {batchData.map((row, rowIndex) => (
-                          <tr key={rowIndex}>
+                  <div className="mt-4">
+                    <div className="mb-2 text-sm text-gray-600">
+                      共 <strong className="text-blue-600">{batchData.length}</strong> 条记录
+                    </div>
+                    <div className="overflow-x-auto border border-gray-200 rounded-lg max-h-96 overflow-y-auto">
+                      <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50 sticky top-0">
+                          <tr>
                               {allFieldKeysInBatch.map(fieldKey => {
                                 const fieldDef = fieldIdToField[fieldKey] || fieldNameToField[fieldKey];
-                                const rawValue = row[fieldKey];
-                                const displayValue = rawValue !== undefined && rawValue !== null
-                                    ? formatFieldValue(fieldDef, rawValue)
-                                    : 'N/A';
+                                const fieldName = fieldDef?.name || fieldKey;
                                 return (
-                                  <td key={fieldKey} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                                    {displayValue}
-                                  </td>
+                                  <th key={fieldKey} scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    {fieldName || '未知字段'}
+                                  </th>
                                 );
                               })}
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                            {batchData.map((row, rowIndex) => (
+                            <tr key={rowIndex} className="hover:bg-gray-50">
+                                {allFieldKeysInBatch.map(fieldKey => {
+                                  const fieldDef = fieldIdToField[fieldKey] || fieldNameToField[fieldKey];
+                                  const rawValue = row[fieldKey];
+                                  const displayValue = rawValue !== undefined && rawValue !== null
+                                      ? formatFieldValue(fieldDef, rawValue)
+                                      : 'N/A';
+                                  return (
+                                    <td key={fieldKey} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                      {displayValue}
+                                    </td>
+                                  );
+                                })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                   ) : (
                     <div className="mt-4 p-4 bg-gray-50 rounded-lg text-center text-gray-500">

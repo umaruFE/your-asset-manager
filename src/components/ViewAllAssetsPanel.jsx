@@ -45,13 +45,25 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
   }, [forms]);
 
   const filteredAssets = useMemo(() => {
-    return assets
+    const filtered = assets
       .filter(asset =>
         (selectedSubAccountId === 'all' || asset.subAccountId === selectedSubAccountId) &&
         (selectedFormId === 'all' || asset.formId === selectedFormId)
       )
       .sort((a, b) => b.submittedAt - a.submittedAt); // 按提交时间倒序
-  }, [assets, selectedSubAccountId, selectedFormId]);
+    
+    // 调试信息：当选择了具体表格时，输出该表格的所有asset记录
+    if (selectedFormId !== 'all') {
+      const formAssets = filtered.filter(a => a.formId === selectedFormId);
+      console.log(`表格 ${formIdToName[selectedFormId]} 的Asset记录数:`, formAssets.length);
+      formAssets.forEach((asset, idx) => {
+        const batchCount = (asset.batchData || asset.batch_data || []).length;
+        console.log(`  Asset ${idx + 1}: ID=${asset.id}, batchData条数=${batchCount}`);
+      });
+    }
+    
+    return filtered;
+  }, [assets, selectedSubAccountId, selectedFormId, formIdToName]);
 
   const [selectedAsset, setSelectedAsset] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);

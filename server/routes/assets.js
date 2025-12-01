@@ -58,7 +58,19 @@ router.get('/', authenticateToken, async (req, res, next) => {
         const result = await pool.query(query, params);
         
         // 转换字段名从下划线到驼峰
-        const camelRows = result.rows.map(row => toCamelCaseObject(row));
+        // 注意：PostgreSQL的JSONB字段会自动解析为JavaScript对象/数组
+        const camelRows = result.rows.map(row => {
+            const camelRow = toCamelCaseObject(row);
+            // 确保batch_data/batchData是数组格式
+            if (camelRow.batchData && typeof camelRow.batchData === 'string') {
+                try {
+                    camelRow.batchData = JSON.parse(camelRow.batchData);
+                } catch (e) {
+                    console.error('解析batchData失败:', e);
+                }
+            }
+            return camelRow;
+        });
         
         res.json(camelRows);
     } catch (error) {

@@ -584,10 +584,31 @@ router.get('/:id/export', authenticateToken, async (req, res, next) => {
                 }
             });
         } else {
-            const assetsResult = await pool.query(
-                'SELECT id, sub_account_name, submitted_at, base_id, batch_data FROM assets WHERE form_id = $1 ORDER BY submitted_at ASC',
-                [form.id]
-            );
+            // 构建查询，应用与assets API相同的权限过滤
+            let assetsQuery = 'SELECT id, sub_account_name, submitted_at, base_id, batch_data FROM assets WHERE form_id = $1';
+            const assetsParams = [form.id];
+            let assetsParamIndex = 2;
+
+            // 权限过滤（与assets API保持一致）
+            if (req.user.role === 'base_handler') {
+                // 基地经手人只能看自己的记录
+                assetsQuery += ` AND sub_account_id = $${assetsParamIndex++}`;
+                assetsParams.push(req.user.id);
+            } else if (req.user.role === 'base_manager') {
+                // 基地负责人只能看自己基地的记录
+                if (req.user.baseId) {
+                    assetsQuery += ` AND base_id = $${assetsParamIndex++}`;
+                    assetsParams.push(req.user.baseId);
+                }
+            } else if (req.user.role !== 'superadmin') {
+                // 其他角色需要通过表单权限过滤
+                // 已经在上面检查了表单权限，这里不需要再次过滤
+                // 但为了安全，可以再次确认
+            }
+
+            assetsQuery += ' ORDER BY submitted_at ASC';
+
+            const assetsResult = await pool.query(assetsQuery, assetsParams);
             const flattenedRows = flattenActiveAssets(assetsResult.rows);
 
             await streamFormWorkbook({
