@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Plus, Trash2, Save, Play, X } from 'lucide-react';
+import { Plus, Trash2, Save, Play, X, HelpCircle, Info, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Button, Modal, useModal, InputGroup, LoadingScreen } from '../utils/UI';
 import { reportsAPI } from '../utils/api';
 
@@ -249,6 +249,17 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     useEffect(() => {
         setSortOrders(prev => prev.filter(order => availableSortColumns.some(col => col.key === order.field)));
     }, [availableSortColumns]);
+
+    // 配置步骤完成状态
+    const stepStatus = useMemo(() => {
+        return {
+            step1: selectedForms.length > 0,
+            step2: selectedFields.length > 0 || aggregations.length > 0 || calculations.length > 0,
+            step3: aggregations.length > 0 || calculations.length > 0,
+            step4: calculations.length > 0,
+            step5: sortOrders.length > 0
+        };
+    }, [selectedForms, selectedFields, aggregations, calculations, sortOrders]);
 
     // 切换表单选择
     const toggleForm = (formId) => {
@@ -577,12 +588,34 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     return (
         <div className="space-y-6 p-6 bg-white rounded-xl shadow-lg">
             <div className="flex justify-between items-center pb-4 border-b border-gray-200">
-                <h2 className="text-2xl font-bold text-gray-800">
-                    {editingReport ? '编辑统计报表' : '创建统计报表'}
-                </h2>
+                <div className="flex-1">
+                    <h2 className="text-2xl font-bold text-gray-800">
+                        {editingReport ? '编辑统计报表' : '创建统计报表'}
+                    </h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                        按照以下步骤配置报表：选择表单 → 选择字段/聚合 → 设置排序（可选）
+                    </p>
+                </div>
                 <Button variant="outline" onClick={onClose}>
                     <X className="w-5 h-5 mr-2" /> 关闭
                 </Button>
+            </div>
+
+            {/* 快速提示卡片 */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex items-start space-x-3">
+                    <Info className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
+                    <div className="flex-1">
+                        <h4 className="font-semibold text-blue-900 mb-2">配置提示</h4>
+                        <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
+                            <li><strong>必选步骤：</strong>至少选择一个表单，并至少选择字段、聚合函数或计算字段中的一项</li>
+                            <li><strong>选择字段：</strong>用于在报表中显示原始数据列（如：日期、鱼类品种等）</li>
+                            <li><strong>聚合函数：</strong>用于对数据进行汇总统计（如：求和、平均值、计数等）</li>
+                            <li><strong>计算字段：</strong>用于创建基于其他字段的计算列（如：结余重量 = 转入重量 - 转出重量）</li>
+                            <li><strong>排序设置：</strong>可选，用于控制报表结果的显示顺序</li>
+                        </ul>
+                    </div>
+                </div>
             </div>
 
             {/* 基本信息 */}
@@ -609,7 +642,27 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
             {/* 选择表单 */}
             <div className="space-y-2">
-                <h3 className="text-lg font-semibold text-gray-700">1. 选择表单</h3>
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                        <h3 className="text-lg font-semibold text-gray-700">1. 选择表单</h3>
+                        {stepStatus.step1 ? (
+                            <CheckCircle2 className="w-5 h-5 text-green-500" title="步骤1已完成" />
+                        ) : (
+                            <AlertCircle className="w-5 h-5 text-orange-500" title="步骤1未完成" />
+                        )}
+                    </div>
+                </div>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-3">
+                    <div className="flex items-start space-x-2">
+                        <HelpCircle className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
+                        <div className="text-sm text-gray-600">
+                            <strong>说明：</strong>选择一个或多个要统计的表单。可以选择多个表单进行跨表单统计。
+                            {selectedForms.length === 0 && (
+                                <span className="text-orange-600 font-medium ml-2">⚠️ 请至少选择一个表单</span>
+                            )}
+                        </div>
+                    </div>
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                     {forms.filter(f => f.isActive).map(form => (
                         <label key={form.id} className="flex items-center space-x-2 p-3 border rounded-lg cursor-pointer hover:bg-gray-50">
@@ -628,8 +681,24 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             {/* 选择字段 */}
             {availableFields.length > 0 && (
                 <div className="space-y-2">
-                    <h3 className="text-lg font-semibold text-gray-700">2. 选择字段</h3>
-                    <p className="text-sm text-gray-500 mb-2">可以选择所有类型的字段进行显示</p>
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                            <h3 className="text-lg font-semibold text-gray-700">2. 选择字段（可选）</h3>
+                            {stepStatus.step2 ? (
+                                <CheckCircle2 className="w-5 h-5 text-green-500" title="步骤2已完成" />
+                            ) : null}
+                        </div>
+                    </div>
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-2">
+                        <div className="flex items-start space-x-2">
+                            <HelpCircle className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
+                            <div className="text-sm text-gray-600">
+                                <strong>说明：</strong>选择要在报表中显示的原始数据字段。这些字段会作为报表的列显示。
+                                <br />
+                                <strong>提示：</strong>如果只需要统计汇总数据，可以不选择字段，只使用聚合函数即可。
+                            </div>
+                        </div>
+                    </div>
                     <div className="grid grid-cols-3 gap-2 max-h-48 overflow-y-auto">
                         {availableFields.map(field => (
                             <label key={`${field.formId}_${field.fieldId}`} className="flex items-center space-x-2 p-2 border rounded cursor-pointer hover:bg-gray-50">
@@ -654,11 +723,33 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             {/* 聚合函数 */}
             <div className="space-y-2">
                 <div className="flex justify-between items-start">
-                    <div>
-                        <h3 className="text-lg font-semibold text-gray-700">3. 聚合函数（求和、平均值等）</h3>
-                        <p className="text-sm text-gray-500 mt-1">注意：SUM、AVG、MAX、MIN 仅适用于数字类型字段，COUNT 适用于所有类型</p>
+                    <div className="flex-1">
+                        <div className="flex items-center space-x-2 mb-2">
+                            <h3 className="text-lg font-semibold text-gray-700">3. 聚合函数（可选）</h3>
+                            {aggregations.length > 0 && (
+                                <CheckCircle2 className="w-5 h-5 text-green-500" title="已配置聚合函数" />
+                            )}
+                        </div>
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-2">
+                            <div className="flex items-start space-x-2">
+                                <Info className="w-4 h-4 text-blue-600 mt-0.5 flex-shrink-0" />
+                                <div className="text-sm text-blue-800">
+                                    <strong>聚合函数说明：</strong>
+                                    <ul className="mt-1 space-y-1 list-disc list-inside ml-2">
+                                        <li><strong>SUM（求和）：</strong>适用于数字字段，计算总和</li>
+                                        <li><strong>AVG（平均值）：</strong>适用于数字字段，计算平均值</li>
+                                        <li><strong>COUNT（计数）：</strong>适用于所有字段，统计记录数量</li>
+                                        <li><strong>MAX（最大值）：</strong>适用于数字字段，找出最大值</li>
+                                        <li><strong>MIN（最小值）：</strong>适用于数字字段，找出最小值</li>
+                                    </ul>
+                                    <p className="mt-2 text-orange-700">
+                                        <strong>⚠️ 注意：</strong>SUM、AVG、MAX、MIN 仅适用于数字类型字段，COUNT 适用于所有类型
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <Button size="sm" variant="outline" onClick={addAggregation}>
+                    <Button size="sm" variant="outline" onClick={addAggregation} className="ml-4">
                         <Plus className="w-4 h-4 mr-1" /> 添加
                     </Button>
                 </div>
@@ -708,8 +799,34 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             {/* 计算字段 */}
             <div className="space-y-2">
                 <div className="flex justify-between items-center">
-                    <h3 className="text-lg font-semibold text-gray-700">4. 计算字段（字段间运算）</h3>
-                    <Button size="sm" variant="outline" onClick={addCalculation}>
+                    <div className="flex-1">
+                        <div className="flex items-center space-x-2 mb-2">
+                            <h3 className="text-lg font-semibold text-gray-700">4. 计算字段（可选）</h3>
+                            {calculations.length > 0 && (
+                                <CheckCircle2 className="w-5 h-5 text-green-500" title="已配置计算字段" />
+                            )}
+                        </div>
+                        <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 mb-2">
+                            <div className="flex items-start space-x-2">
+                                <HelpCircle className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />
+                                <div className="text-sm text-purple-800">
+                                    <strong>计算字段说明：</strong>用于创建基于其他字段的计算列。
+                                    <br />
+                                    <strong>使用步骤：</strong>
+                                    <ol className="list-decimal list-inside ml-2 mt-1 space-y-1">
+                                        <li>在下方选择字段下拉框中选择要参与计算的字段</li>
+                                        <li>选择运算符（+、-、*、/）</li>
+                                        <li>继续添加字段或数字，完成表达式</li>
+                                        <li>为计算字段命名（如：结余重量）</li>
+                                    </ol>
+                                    <strong className="mt-2 block">示例：</strong>如果"转入重量"和"转出重量"都设置了SUM聚合，可以创建"结余重量 = 转入重量 - 转出重量"
+                                    <br />
+                                    <strong className="text-orange-700">⚠️ 重要提示：</strong>计算字段会自动识别聚合后的字段（如：字段名_SUM），如果字段已设置聚合函数，计算时会自动使用聚合后的值。
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <Button size="sm" variant="outline" onClick={addCalculation} className="ml-4">
                         <Plus className="w-4 h-4 mr-1" /> 添加
                     </Button>
                 </div>
@@ -763,13 +880,24 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                                             }
                                         }}
                                         className="flex-1 px-2 py-1 border rounded text-sm"
+                                        title="选择要参与计算的字段。如果该字段已设置聚合函数，会自动使用聚合后的值。"
                                     >
                                         <option value="">选择字段...</option>
-                                        {availableFields.map(field => (
-                                            <option key={`${field.formId}_${field.fieldId}`} value={`${field.formId}_${field.fieldId}`}>
-                                                {field.formName}.{field.fieldName}
-                                            </option>
-                                        ))}
+                                        {availableFields.map(field => {
+                                            // 检查该字段是否已设置聚合函数
+                                            const hasAggregation = aggregations.some(agg => 
+                                                agg.formId === field.formId && agg.fieldId === field.fieldId
+                                            );
+                                            const aggLabel = hasAggregation 
+                                                ? aggregations.find(agg => agg.formId === field.formId && agg.fieldId === field.fieldId)?.function || ''
+                                                : '';
+                                            return (
+                                                <option key={`${field.formId}_${field.fieldId}`} value={`${field.formId}_${field.fieldId}`}>
+                                                    {field.formName}.{field.fieldName}
+                                                    {hasAggregation && ` (已聚合: ${aggLabel})`}
+                                                </option>
+                                            );
+                                        })}
                                     </select>
                                     <select
                                         value=""
@@ -832,7 +960,12 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             {availableResultColumns.length > 0 && (
                 <div className="space-y-2">
                     <div className="flex justify-between items-center">
-                        <h3 className="text-lg font-semibold text-gray-700">5. 排序设置</h3>
+                        <div className="flex items-center space-x-2">
+                            <h3 className="text-lg font-semibold text-gray-700">5. 排序设置（可选）</h3>
+                            {stepStatus.step5 && (
+                                <CheckCircle2 className="w-5 h-5 text-green-500" title="已配置排序" />
+                            )}
+                        </div>
                         <Button
                             size="sm"
                             variant="outline"
@@ -841,6 +974,14 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                         >
                             <Plus className="w-4 h-4 mr-1" /> 添加排序
                         </Button>
+                    </div>
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-2">
+                        <div className="flex items-start space-x-2">
+                            <HelpCircle className="w-4 h-4 text-gray-500 mt-0.5 flex-shrink-0" />
+                            <div className="text-sm text-gray-600">
+                                <strong>说明：</strong>设置报表结果的排序方式。可以设置多个排序条件，按优先级依次排序。最多可设置3个排序条件。
+                            </div>
+                        </div>
                     </div>
                     {sortOrders.length === 0 ? (
                         <p className="text-sm text-gray-500">尚未设置排序。最多可配置三个排序优先级。</p>
@@ -878,13 +1019,66 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                 </div>
             )}
 
+            {/* 配置状态提示 */}
+            {!stepStatus.step1 && (
+                <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                    <div className="flex items-start space-x-2">
+                        <AlertCircle className="w-5 h-5 text-orange-600 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1">
+                            <h4 className="font-semibold text-orange-900 mb-1">配置未完成</h4>
+                            <p className="text-sm text-orange-800">
+                                请至少完成以下步骤：选择一个表单，并至少选择字段、聚合函数或计算字段中的一项。
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {stepStatus.step1 && !stepStatus.step2 && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <div className="flex items-start space-x-2">
+                        <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1">
+                            <h4 className="font-semibold text-yellow-900 mb-1">配置未完成</h4>
+                            <p className="text-sm text-yellow-800">
+                                请至少选择字段、聚合函数或计算字段中的一项，才能生成报表。
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {stepStatus.step1 && stepStatus.step2 && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-start space-x-2">
+                        <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1">
+                            <h4 className="font-semibold text-green-900 mb-1">配置已完成</h4>
+                            <p className="text-sm text-green-800">
+                                基本配置已完成，可以点击"预览执行"查看报表结果，或直接"保存报表"。
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* 操作按钮 */}
             <div className="flex justify-end space-x-3 pt-4 border-t">
-                <Button variant="outline" onClick={handleExecute} disabled={isExecuting}>
+                <Button 
+                    variant="outline" 
+                    onClick={handleExecute} 
+                    disabled={isExecuting || !stepStatus.step1 || !stepStatus.step2}
+                    title={!stepStatus.step1 || !stepStatus.step2 ? '请先完成基本配置' : '预览报表执行结果'}
+                >
                     <Play className="w-4 h-4 mr-2" />
                     {isExecuting ? '执行中...' : '预览执行'}
                 </Button>
-                <Button variant="primary" onClick={handleSave} disabled={isSaving}>
+                <Button 
+                    variant="primary" 
+                    onClick={handleSave} 
+                    disabled={isSaving || !stepStatus.step1 || !stepStatus.step2}
+                    title={!stepStatus.step1 || !stepStatus.step2 ? '请先完成基本配置' : '保存报表配置'}
+                >
                     <Save className="w-4 h-4 mr-2" />
                     {isSaving ? '保存中...' : '保存报表'}
                 </Button>

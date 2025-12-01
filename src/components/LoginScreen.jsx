@@ -73,7 +73,7 @@ export default function LoginScreen({ onLogin }) {
             </Button>
         </form>
 
-        <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+        {/* <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
           <p className="text-sm font-medium text-blue-800 mb-2">默认账号（密码均为 password123）：</p>
           <div className="text-xs text-blue-600 space-y-1">
             <p>• 超级管理员: superadmin</p>
@@ -82,7 +82,7 @@ export default function LoginScreen({ onLogin }) {
             <p>• 公司资产员: asset1</p>
             <p>• 公司财务: finance1</p>
           </div>
-        </div>
+        </div> */}
       </div>
     </div>
   );
