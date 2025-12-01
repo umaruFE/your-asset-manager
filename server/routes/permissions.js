@@ -22,6 +22,23 @@ router.get('/users/:userId', authenticateToken, requireRole('superadmin'), async
     }
 });
 
+// 获取表单的所有用户权限（仅超级管理员）
+router.get('/forms/:formId', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
+    try {
+        const result = await pool.query(
+            `SELECT ufp.*, u.name as user_name, u.email as user_email, u.role as user_role
+             FROM user_form_permissions ufp
+             JOIN users u ON ufp.user_id = u.id
+             WHERE ufp.form_id = $1
+             ORDER BY u.name`,
+            [req.params.formId]
+        );
+        res.json(result.rows);
+    } catch (error) {
+        next(error);
+    }
+});
+
 // 设置用户表单权限（仅超级管理员）
 router.post('/users/:userId/forms/:formId', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {

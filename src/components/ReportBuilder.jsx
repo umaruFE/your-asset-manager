@@ -16,13 +16,10 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     const [executionResult, setExecutionResult] = useState(null);
     const [loadingReport, setLoadingReport] = useState(false);
     const [sortOrders, setSortOrders] = useState([]);
-    const [numberInputs, setNumberInputs] = useState({}); // Store number input values by calcId
     const saveModal = useModal();
 
     // 如果是编辑模式，加载报表数据
     useEffect(() => {
-        if (formsLoading) return;
-
         if (editingReport) {
             loadReportData(editingReport);
         } else {
@@ -36,7 +33,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             setSortOrders([]);
             setExecutionResult(null);
         }
-    }, [editingReport, formsLoading]);
+    }, [editingReport]);
 
     // 加载报表数据并回填表单
     const loadReportData = async (report) => {
@@ -91,8 +88,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             if (config.calculations && Array.isArray(config.calculations)) {
                 // 获取所有可用字段（用于解析表达式）
                 const allFields = [];
-                const formsToUse = config.selectedForms || [];
-                formsToUse.forEach(formId => {
+                selectedForms.forEach(formId => {
                     const form = forms.find(f => f.id === formId);
                     if (form && form.fields) {
                         form.fields
@@ -114,15 +110,10 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                     let parts = calc.parts || [];
                     if (!parts.length && calc.expression) {
                         // 简单解析：按空格分割，识别字段ID和运算符
-                        // 预处理：在括号前后添加空格，确保 split 能正确分离括号
-                        const normalizedExpression = calc.expression
-                            .replace(/\(/g, ' ( ')
-                            .replace(/\)/g, ' ) ')
-                            .trim();
-                        const tokens = normalizedExpression.split(/\s+/);
+                        const tokens = calc.expression.split(/\s+/);
                         parts = tokens.map(token => {
                             // 检查是否是运算符
-                            if (['+', '-', '*', '/', '(', ')'].includes(token)) {
+                            if (['+', '-', '*', '/'].includes(token)) {
                                 return { type: 'operator', value: token };
                             }
                             // 检查是否是数字
@@ -133,20 +124,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             const field = allFields.find(f => f.fieldId === token);
                             return { type: 'field', fieldId: token, fieldName: field?.fieldName || token };
                         });
-                    } else {
-                        // 如果已有parts，确保fieldName是最新的
-                        parts = parts.map(part => {
-                            if (part.type === 'field') {
-                                const field = allFields.find(f => f.fieldId === part.fieldId);
-                                return {
-                                    ...part,
-                                    fieldName: field?.fieldName || part.fieldName || part.fieldId
-                                };
-                            }
-                            return part;
-                        });
                     }
-
                     return {
                         name: calc.name || `计算字段${index + 1}`,
                         expression: calc.expression || '',
@@ -224,9 +202,53 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         return columns;
     }, [selectedFields, aggregations, calculations]);
 
+    // 获取所有可排序的列（包括未选中的字段）
+    const availableSortColumns = useMemo(() => {
+        const columns = [];
+
+        // 1. 所有可用字段
+        availableFields.forEach(field => {
+            columns.push({
+                key: field.fieldName || field.fieldId,
+                label: field.fieldName || field.fieldId
+            });
+        });
+
+        // 2. 所有聚合函数
+        aggregations.forEach(agg => {
+            const label = `${agg.fieldName || agg.fieldId || '字段'}_${agg.function || 'SUM'}`;
+            columns.push({
+                key: label,
+                label
+            });
+        });
+
+        // 3. 所有计算字段
+        calculations.forEach(calc => {
+            if (calc.name) {
+                columns.push({
+                    key: calc.name,
+                    label: calc.name
+                });
+            }
+        });
+
+        // 去重 (以防万一)
+        const uniqueColumns = [];
+        const seenKeys = new Set();
+        columns.forEach(col => {
+            if (!seenKeys.has(col.key)) {
+                seenKeys.add(col.key);
+                uniqueColumns.push(col);
+            }
+        });
+
+        return uniqueColumns;
+    }, [availableFields, aggregations, calculations]);
+
     useEffect(() => {
-        setSortOrders(prev => prev.filter(order => availableResultColumns.some(col => col.key === order.field)));
-    }, [availableResultColumns]);
+        setSortOrders(prev => prev.filter(order => availableSortColumns.some(col => col.key === order.field)));
+    }, [availableSortColumns]);
 
     // 切换表单选择
     const toggleForm = (formId) => {
@@ -345,8 +367,6 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             }
             return calc;
         }));
-        // Clear the input
-        setNumberInputs(prev => ({ ...prev, [calcId]: '' }));
     };
 
     // 删除计算表达式的最后一个部分
@@ -766,35 +786,18 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                                         <option value="-">- (减)</option>
                                         <option value="*">* (乘)</option>
                                         <option value="/">/ (除)</option>
-                                        <option value="(">( (左括号)</option>
-                                        <option value=")">) (右括号)</option>
                                     </select>
-                                    <div className="flex items-center space-x-1">
-                                        <input
-                                            type="number"
-                                            placeholder="数字"
-                                            value={numberInputs[calc.id] || ''}
-                                            onChange={(e) => setNumberInputs(prev => ({ ...prev, [calc.id]: e.target.value }))}
-                                            className="w-24 px-2 py-1 border rounded text-sm"
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter' && numberInputs[calc.id]) {
-                                                    addNumberToCalculation(calc.id, numberInputs[calc.id]);
-                                                }
-                                            }}
-                                        />
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => {
-                                                if (numberInputs[calc.id]) {
-                                                    addNumberToCalculation(calc.id, numberInputs[calc.id]);
-                                                }
-                                            }}
-                                            disabled={!numberInputs[calc.id]}
-                                        >
-                                            <Plus className="w-3 h-3" />
-                                        </Button>
-                                    </div>
+                                    <input
+                                        type="number"
+                                        placeholder="数字"
+                                        className="w-24 px-2 py-1 border rounded text-sm"
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter' && e.target.value) {
+                                                addNumberToCalculation(calc.id, e.target.value);
+                                                e.target.value = '';
+                                            }
+                                        }}
+                                    />
                                 </div>
                                 <div className="flex items-center space-x-2">
                                     <Button
@@ -834,7 +837,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             size="sm"
                             variant="outline"
                             onClick={addSortOrder}
-                            disabled={sortOrders.length >= 3 || availableResultColumns.length === 0}
+                            disabled={sortOrders.length >= 3 || availableSortColumns.length === 0}
                         >
                             <Plus className="w-4 h-4 mr-1" /> 添加排序
                         </Button>
@@ -851,7 +854,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                                         onChange={(e) => updateSortOrder(order.id, { field: e.target.value })}
                                         className="flex-1 px-3 py-2 border rounded-md text-sm"
                                     >
-                                        {availableResultColumns.map(column => (
+                                        {availableSortColumns.map(column => (
                                             <option key={column.key} value={column.key}>
                                                 {column.label}
                                             </option>

@@ -1,13 +1,13 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { Settings, Users, BarChart3, Plus, Trash2, ChevronDown, Loader, ArrowUp, ArrowDown, GripVertical } from 'lucide-react';
+import { Settings, Users, BarChart3, Plus, Trash2, ChevronDown, Loader, ArrowUp, ArrowDown, GripVertical, ShieldCheck } from 'lucide-react';
 import { Button, Modal, useModal, InputGroup, Dropdown, LoadingScreen } from '../utils/UI';
 import { generateId } from '../utils/helpers';
-import { formsAPI } from '../utils/api';
+import { formsAPI, permissionsAPI } from '../utils/api';
 import UserManagementPanel from './UserManagementPanel';
 import ReportsPanel from './ReportsPanel';
 
 // 3a. 管理表格模板 (ManageFormsPanel)
-function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) {
+function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields, getCollectionHook }) {
     // Removed internal getCollectionHook call
     const [newFormName, setNewFormName] = useState('');
     const [actionError, setActionError] = useState(null);
@@ -16,6 +16,7 @@ function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) 
     const confirmModal = useModal();
     const [renamingForm, setRenamingForm] = useState(null);
     const [renameValue, setRenameValue] = useState('');
+    const [permissionFormId, setPermissionFormId] = useState(null);
 
     // 直接设置数据，避免触发useAPI的更新逻辑
     const setFormsData = useCallback((newForms) => {
@@ -191,6 +192,9 @@ function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) 
                                 <Button size="sm" variant="outline" onClick={() => onEditFields(form.id)}>
                                     <Settings className="w-4 h-4 mr-1" /> 编辑字段
                                 </Button>
+                                <Button size="sm" variant="outline" onClick={() => setPermissionFormId(form.id)}>
+                                    <ShieldCheck className="w-4 h-4 mr-1" /> 权限配置
+                                </Button>
                                     <Button
                                         size="sm"
                                         variant="outline"
@@ -254,7 +258,165 @@ function ManageFormsPanel({ forms, loading, error, updateForms, onEditFields }) 
                     </div>
                 </Modal>
             )}
+
+            {permissionFormId && getCollectionHook && (
+                <FormPermissionManager
+                    formId={permissionFormId}
+                    formName={forms.find(f => f.id === permissionFormId)?.name || '未知表格'}
+                    getCollectionHook={getCollectionHook}
+                    onClose={() => setPermissionFormId(null)}
+                />
+            )}
         </div>
+    );
+}
+
+// 表单权限管理组件
+function FormPermissionManager({ formId, formName, getCollectionHook, onClose }) {
+    const { data: users } = getCollectionHook('allAppUsers');
+    const [permissions, setPermissions] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        loadPermissions();
+    }, [formId]);
+
+    const loadPermissions = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const perms = await permissionsAPI.getFormPermissions(formId);
+            setPermissions(perms);
+        } catch (err) {
+            setError(err.message || '加载权限失败');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleTogglePermission = async (userId, type) => {
+        const existing = permissions.find(p => p.user_id === userId);
+        const currentCanView = existing?.can_view || false;
+        const currentCanSubmit = existing?.can_submit || false;
+
+        let newCanView = currentCanView;
+        let newCanSubmit = currentCanSubmit;
+
+        if (type === 'can_view') {
+            newCanView = !currentCanView;
+        } else if (type === 'can_submit') {
+            newCanSubmit = !currentCanSubmit;
+        }
+
+        setSaving(true);
+        try {
+            await permissionsAPI.setFormUserPermission(userId, formId, newCanView, newCanSubmit);
+            await loadPermissions();
+        } catch (err) {
+            setError(err.message || '保存权限失败');
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleRemovePermission = async (userId) => {
+        setSaving(true);
+        try {
+            await permissionsAPI.deleteFormUserPermission(userId, formId);
+            await loadPermissions();
+        } catch (err) {
+            setError(err.message || '删除权限失败');
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    // 过滤出非超级管理员用户（超级管理员默认拥有所有权限）
+    const regularUsers = users?.filter(u => u.role !== 'superadmin') || [];
+
+    return (
+        <Modal
+            isOpen={!!formId}
+            onClose={onClose}
+            title={`权限配置：${formName}`}
+        >
+            <div className="space-y-4">
+                <p className="text-sm text-gray-600 mb-4">
+                    为表格 <strong>{formName}</strong> 配置用户权限。超级管理员默认拥有所有权限。
+                </p>
+
+                {error && (
+                    <div className="p-3 bg-red-100 border border-red-300 text-red-700 rounded-lg text-sm">
+                        {error}
+                    </div>
+                )}
+
+                {loading ? (
+                    <LoadingScreen message="加载权限中..." />
+                ) : (
+                    <div className="max-h-96 overflow-y-auto space-y-2">
+                        {regularUsers.map(user => {
+                            const perm = permissions.find(p => p.user_id === user.id);
+                            const canView = perm?.can_view || false;
+                            const canSubmit = perm?.can_submit || false;
+
+                            return (
+                                <div key={user.id} className="flex items-center justify-between p-3 border rounded-lg">
+                                    <div className="flex-1">
+                                        <div className="font-medium">{user.name}</div>
+                                        <div className="text-sm text-gray-500">{user.email || user.role}</div>
+                                    </div>
+                                    <div className="flex items-center space-x-4">
+                                        <label className="flex items-center space-x-2">
+                                            <input
+                                                type="checkbox"
+                                                checked={canView}
+                                                onChange={() => handleTogglePermission(user.id, 'can_view')}
+                                                disabled={saving}
+                                                className="w-4 h-4"
+                                            />
+                                            <span className="text-sm">可查看</span>
+                                        </label>
+                                        <label className="flex items-center space-x-2">
+                                            <input
+                                                type="checkbox"
+                                                checked={canSubmit}
+                                                onChange={() => handleTogglePermission(user.id, 'can_submit')}
+                                                disabled={saving}
+                                                className="w-4 h-4"
+                                            />
+                                            <span className="text-sm">可提交</span>
+                                        </label>
+                                        {(canView || canSubmit) && (
+                                            <Button
+                                                size="sm"
+                                                variant="danger"
+                                                onClick={() => handleRemovePermission(user.id)}
+                                                disabled={saving}
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </Button>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+
+                {regularUsers.length === 0 && !loading && (
+                    <p className="text-sm text-gray-500 text-center py-4">暂无其他用户</p>
+                )}
+
+                <div className="flex justify-end mt-4">
+                    <Button variant="primary" onClick={onClose} disabled={saving}>
+                        {saving ? '保存中...' : '完成'}
+                    </Button>
+                </div>
+            </div>
+        </Modal>
     );
 }
 
@@ -991,6 +1153,7 @@ function SuperAdminPanel({ user, getCollectionHook }) {
                         error={formsError}
                         updateForms={updateForms}
                         onEditFields={setEditingFormId}
+                        getCollectionHook={getCollectionHook}
                     />
                 )}
                 {activeTab === 'manageUsers' && <UserManagementPanel getCollectionHook={getCollectionHook} />}

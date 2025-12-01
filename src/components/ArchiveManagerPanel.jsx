@@ -18,8 +18,11 @@ export default function ArchiveManagerPanel({ user, getCollectionHook }) {
     const [pendingFormIds, setPendingFormIds] = useState([]);
     const confirmModal = useModal();
 
+    // 只显示未归档的表格（archiveStatus === 'active'）
     const sortedForms = useMemo(() => {
-        return (forms || []).sort((a, b) => a.name.localeCompare(b.name));
+        return (forms || [])
+            .filter(form => form.archiveStatus === 'active')
+            .sort((a, b) => a.name.localeCompare(b.name));
     }, [forms]);
 
     const toggleSelection = (formId) => {
@@ -198,7 +201,7 @@ export default function ArchiveManagerPanel({ user, getCollectionHook }) {
                                             size="sm"
                                             variant="outline"
                                             onClick={() => openConfirmModal([form.id])}
-                                            disabled={processing}
+                                            disabled={processing || form.archiveStatus !== 'active'}
                                         >
                                             立即归档
                                         </Button>

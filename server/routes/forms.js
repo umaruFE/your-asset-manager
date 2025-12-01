@@ -42,9 +42,16 @@ router.get('/', authenticateToken, async (req, res, next) => {
         let paramIndex = 1;
         const requestedArchiveStatus = req.query.archiveStatus;
 
-        // 超级管理员可以看到所有表单（包括禁用的）
+        // 超级管理员和公司资产管理角色可以看到所有表单（包括禁用的和已归档的）
         // 其他角色只能看到激活且未归档的表单，并且需要通过权限表过滤
-        if (req.user.role !== 'superadmin') {
+        if (req.user.role === 'superadmin' || req.user.role === 'company_asset') {
+            // 超级管理员和公司资产管理角色可以看到所有表单
+            if (requestedArchiveStatus) {
+                query += ` AND archive_status = $${paramIndex++}`;
+                params.push(requestedArchiveStatus);
+            }
+        } else {
+            // 其他角色只能看到激活且未归档的表单
             query += ` AND is_active = true AND archive_status = $${paramIndex++}`;
             params.push('active');
 
@@ -53,9 +60,6 @@ router.get('/', authenticateToken, async (req, res, next) => {
                 WHERE user_id = $${paramIndex++} AND can_view = true
             )`;
             params.push(req.user.id);
-        } else if (requestedArchiveStatus) {
-            query += ` AND archive_status = $${paramIndex++}`;
-            params.push(requestedArchiveStatus);
         }
 
         query += ' ORDER BY created_at DESC';
@@ -689,9 +693,11 @@ async function archiveFormById(formId, user, options = {}) {
 
         await client.query('DELETE FROM assets WHERE form_id = $1', [formId]);
 
+        // 归档后状态应改为 'archived'，无论 autoUnlock 设置如何
+        // autoUnlock 参数可能用于其他用途，但不影响归档状态
         await client.query(
             'UPDATE forms SET archive_status = $1, archive_version = $2, archived_at = $3, archived_by = $4 WHERE id = $5',
-            [autoUnlock ? 'active' : 'archived', version, archivedAt, user.id, formId]
+            ['archived', version, archivedAt, user.id, formId]
         );
 
         await client.query('COMMIT');
@@ -843,7 +849,8 @@ async function streamFormWorkbook({ res, form, fields = [], rows = [], scope = '
     const fileName = `${sanitizeFileName(form.name)}${suffix}_${timestamp}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    const encodedFileName = encodeURIComponent(fileName);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodedFileName}"; filename*=UTF-8''${encodedFileName}`);
     await workbook.xlsx.write(res);
     res.end();
 }

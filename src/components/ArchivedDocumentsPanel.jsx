@@ -141,7 +141,7 @@ export default function ArchivedDocumentsPanel({ user, getCollectionHook }) {
     return (
         <div className="space-y-6">
             <div className="flex flex-col md:flex-row md:items-end md:justify-between space-y-4 md:space-y-0">
-                <div className="flex-1">
+                <div className="flex-1 mr-3">
                     <label className="block text-sm font-medium text-gray-700 mb-1">选择表格</label>
                     <select
                         value={selectedFormId}

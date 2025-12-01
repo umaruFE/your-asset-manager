@@ -331,10 +331,27 @@ export const permissionsAPI = {
         return await apiRequest(`/users/${userId}/permissions`);
     },
 
+    getFormPermissions: async (formId) => {
+        return await apiRequest(`/permissions/forms/${formId}`);
+    },
+
     setPermission: async (userId, permissionData) => {
         return await apiRequest(`/users/${userId}/permissions`, {
             method: 'POST',
             body: JSON.stringify(permissionData),
+        });
+    },
+
+    setFormUserPermission: async (userId, formId, canView, canSubmit) => {
+        return await apiRequest(`/permissions/users/${userId}/forms/${formId}`, {
+            method: 'POST',
+            body: JSON.stringify({ canView, canSubmit }),
+        });
+    },
+
+    deleteFormUserPermission: async (userId, formId) => {
+        return await apiRequest(`/permissions/users/${userId}/forms/${formId}`, {
+            method: 'DELETE',
         });
     },
 

@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Play, Edit, FileText } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Plus, Trash2, Play, Edit, FileText, ArrowUp, ArrowDown } from 'lucide-react';
 import { Button, Modal, useModal, LoadingScreen } from '../utils/UI';
 import { reportsAPI } from '../utils/api';
 import ReportBuilder from './ReportBuilder';
@@ -12,6 +12,7 @@ export default function ReportsPanel({ user, getCollectionHook }) {
     const [editingReport, setEditingReport] = useState(null);
     const [executingReport, setExecutingReport] = useState(null);
     const [executionResult, setExecutionResult] = useState(null);
+    const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
     const confirmModal = useModal();
     const canManageReports = user.role === 'superadmin';
 
@@ -43,12 +44,71 @@ export default function ReportsPanel({ user, getCollectionHook }) {
         }
     };
 
+    // 处理列排序
+    const handleSort = (key) => {
+        setSortConfig(prev => {
+            if (prev.key === key) {
+                // 如果点击同一列，切换排序方向
+                return {
+                    key,
+                    direction: prev.direction === 'asc' ? 'desc' : 'asc'
+                };
+            } else {
+                // 如果点击不同列，设置为升序
+                return {
+                    key,
+                    direction: 'asc'
+                };
+            }
+        });
+    };
+
+    // 排序后的数据
+    const sortedData = useMemo(() => {
+        if (!executionResult || !executionResult.data || executionResult.data.length === 0) {
+            return [];
+        }
+        if (!sortConfig.key) {
+            return executionResult.data;
+        }
+
+        const sorted = [...executionResult.data];
+        sorted.sort((a, b) => {
+            const aVal = a[sortConfig.key];
+            const bVal = b[sortConfig.key];
+
+            // 处理 null/undefined
+            if (aVal == null && bVal == null) return 0;
+            if (aVal == null) return 1;
+            if (bVal == null) return -1;
+
+            // 尝试数字比较
+            const aNum = parseFloat(aVal);
+            const bNum = parseFloat(bVal);
+            if (!isNaN(aNum) && !isNaN(bNum)) {
+                return sortConfig.direction === 'asc' ? aNum - bNum : bNum - aNum;
+            }
+
+            // 字符串比较
+            const aStr = String(aVal).toLowerCase();
+            const bStr = String(bVal).toLowerCase();
+            if (sortConfig.direction === 'asc') {
+                return aStr.localeCompare(bStr, 'zh');
+            } else {
+                return bStr.localeCompare(aStr, 'zh');
+            }
+        });
+
+        return sorted;
+    }, [executionResult, sortConfig]);
+
     // 执行报表
     const handleExecute = async (report) => {
         try {
             setExecutingReport(report.id);
             const result = await reportsAPI.execute(report.id);
             setExecutionResult({ report, ...result });
+            setSortConfig({ key: null, direction: 'asc' }); // 重置排序
         } catch (err) {
             // 尝试解析错误响应
             let errorMessage = err.message || '执行失败';
@@ -254,18 +314,31 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                                 <thead className="bg-gray-100 sticky top-0">
                                     <tr>
                                         {Object.keys(executionResult.data[0] || {}).map(key => (
-                                            <th key={key} className="px-4 py-2 text-left text-xs font-medium text-gray-700">
-                                                {key}
+                                            <th 
+                                                key={key} 
+                                                className="px-4 py-2 text-left text-xs font-medium text-gray-700 cursor-pointer hover:bg-gray-200 select-none"
+                                                onClick={() => handleSort(key)}
+                                            >
+                                                <div className="flex items-center space-x-1">
+                                                    <span>{key}</span>
+                                                    {sortConfig.key === key && (
+                                                        sortConfig.direction === 'asc' ? (
+                                                            <ArrowUp className="w-3 h-3" />
+                                                        ) : (
+                                                            <ArrowDown className="w-3 h-3" />
+                                                        )
+                                                    )}
+                                                </div>
                                             </th>
                                         ))}
                                     </tr>
                                 </thead>
                                 <tbody className="bg-white divide-y divide-gray-200">
-                                    {executionResult.data.map((row, idx) => (
+                                    {sortedData.map((row, idx) => (
                                         <tr key={idx}>
-                                            {Object.values(row).map((value, i) => (
+                                            {Object.keys(executionResult.data[0] || {}).map((key, i) => (
                                                 <td key={i} className="px-4 py-2 text-sm text-gray-900">
-                                                    {value}
+                                                    {row[key]}
                                                 </td>
                                             ))}
                                         </tr>

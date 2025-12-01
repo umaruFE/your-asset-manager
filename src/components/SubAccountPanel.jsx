@@ -6,8 +6,8 @@ import ArchivedDocumentsPanel from './ArchivedDocumentsPanel';
 
 const STATIC_TABS = {
     myAssets: { id: 'myAssets', label: '我的记录', icon: Box, type: 'static' },
-    viewFiles: { id: 'viewFiles', label: '查看文件', icon: FileText, type: 'static' },
     archivedDocs: { id: 'archivedDocs', label: '已归档文档', icon: Archive, type: 'static' },
+    viewFiles: { id: 'viewFiles', label: '查看文件', icon: FileText, type: 'static' },
 };
 
 export default function SubAccountPanel({ user, getCollectionHook }) {

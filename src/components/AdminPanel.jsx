@@ -13,8 +13,8 @@ export default function AdminPanel({ user, getCollectionHook }) {
   const tabs = useMemo(() => {
     const baseTabs = [
       { id: 'viewAssets', label: '登记表格', icon: ClipboardList },
-      { id: 'reports', label: '统计报表', icon: BarChart3 },
       { id: 'archives', label: '已归档文档', icon: Archive },
+      { id: 'reports', label: '统计报表', icon: BarChart3 },
       { id: 'uploadFile', label: '管理文件', icon: UploadCloud },
     ];
 
