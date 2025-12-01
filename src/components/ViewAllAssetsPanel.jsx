@@ -8,7 +8,7 @@ import { formsAPI } from '../utils/api';
 export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
   const { data: assets, loading: assetsLoading, error: assetsError } = getCollectionHook('assets');
   const { data: allAppUsers = [], loading: usersLoading, error: usersError } = getCollectionHook('allAppUsers');
-  const { data: forms } = getCollectionHook('forms');
+  const { data: forms = [], loading: formsLoading, error: formsError } = getCollectionHook('forms');
 
   const [selectedFormId, setSelectedFormId] = useState('all');
   const [selectedSubAccountId, setSelectedSubAccountId] = useState('all');
@@ -31,10 +31,17 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
 
   // 创建表单ID到表单名的映射
   const formIdToName = useMemo(() => {
+    if (!forms || !Array.isArray(forms)) return {};
     return forms.reduce((acc, form) => {
       acc[form.id] = form.name;
       return acc;
     }, {});
+  }, [forms]);
+
+  // 获取可用的激活表单列表
+  const activeForms = useMemo(() => {
+    if (!forms || !Array.isArray(forms)) return [];
+    return forms.filter(f => f.isActive);
   }, [forms]);
 
   const filteredAssets = useMemo(() => {
@@ -90,11 +97,11 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
     }
   };
 
-  if (assetsLoading || usersLoading) {
+  if (assetsLoading || usersLoading || formsLoading) {
     return <LoadingScreen message="正在加载所有记录数据..." />;
   }
-  if (assetsError || usersError) {
-    return <div className="text-red-500">加载数据失败: {assetsError || usersError}</div>;
+  if (assetsError || usersError || formsError) {
+    return <div className="text-red-500">加载数据失败: {assetsError || usersError || formsError}</div>;
   }
 
   return (
@@ -102,7 +109,9 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-2xl font-semibold text-gray-800">汇总查看记录</h2>
-          <p className="text-sm text-gray-500 mt-1">筛选经手人或表格后，可导出未归档Excel。</p>
+          <p className="text-sm text-gray-500 mt-1">
+            在左侧<strong className="text-blue-600">"选择要导出的表格"</strong>下拉菜单中选择一个具体表格后，即可导出该表格的未归档Excel。
+          </p>
         </div>
         {/* 视图切换按钮 */}
         <div className="flex gap-2 border border-gray-300 rounded-lg p-1">
@@ -134,19 +143,27 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
         <div className="flex flex-col sm:flex-row sm:space-x-4 space-y-4 sm:space-y-0">
           <div className="max-w-xs w-full">
             <label htmlFor="form-filter" className="block text-sm font-medium text-gray-700 mb-1">
-              筛选表格
+              <span>选择要导出的表格</span>
+              {selectedFormId === 'all' && (
+                <span className="ml-2 text-xs text-red-500 font-normal">*必选</span>
+              )}
             </label>
             <select
               id="form-filter"
               value={selectedFormId}
               onChange={(e) => setSelectedFormId(e.target.value)}
-              className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md shadow-sm"
+              className={`mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md shadow-sm ${
+                selectedFormId === 'all' ? 'border-red-300 bg-red-50' : ''
+              }`}
             >
-              <option value="all">所有表格</option>
-              {forms.filter(f => f.isActive).map(form => (
+              <option value="all">-- 请选择表格（导出必选）--</option>
+              {activeForms.map(form => (
                 <option key={form.id} value={form.id}>{form.name}</option>
               ))}
             </select>
+            {selectedFormId === 'all' && (
+              <p className="mt-1 text-xs text-red-500">请从上方下拉菜单选择一个具体的表格才能导出</p>
+            )}
           </div>
           {subAccounts.length > 0 && (
             <div className="max-w-xs w-full">
@@ -174,7 +191,9 @@ export default function ViewAllAssetsPanel({ user, getCollectionHook }) {
           <Button
             variant="outline"
             onClick={handleExportExcel}
-            disabled={selectedFormId === 'all' || downloadingFormId === selectedFormId}
+            disabled={selectedFormId === 'all' || downloadingFormId === selectedFormId || !forms || forms.length === 0}
+            title={selectedFormId === 'all' ? '请先从左侧"选择要导出的表格"下拉菜单中选择一个具体的表格（不能选择"所有表格"）' : '点击导出当前选择的表格数据'}
+            className={selectedFormId === 'all' ? 'opacity-50 cursor-not-allowed' : ''}
           >
             <Download className="w-4 h-4 mr-2" />
             {downloadingFormId === selectedFormId ? '导出中...' : '导出未归档Excel'}
