@@ -315,14 +315,14 @@ export default function UserManagementPanel({ getCollectionHook }) {
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{u.base_name || '-'}</td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
-                                        <Button
+                                        {/* <Button
                                             size="sm"
                                             variant="outline"
                                             onClick={() => handleManagePermissions(u)}
                                         >
                                             <Settings className="w-4 h-4 mr-1" />
                                             权限
-                                        </Button>
+                                        </Button> */}
                                         {u.role !== 'superadmin' && (
                                             <Button
                                                 size="sm"

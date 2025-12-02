@@ -365,8 +365,8 @@ function FormPermissionManager({ formId, formName, getCollectionHook, onClose })
                             return (
                                 <div key={user.id} className="flex items-center justify-between p-3 border rounded-lg">
                                     <div className="flex-1">
-                                        <div className="font-medium">{user.name}</div>
-                                        <div className="text-sm text-gray-500">{user.email || user.role}</div>
+                                        <div className="font-medium">{user.user_name || user.name}</div>
+                                        <div className="text-sm text-gray-500">{user.user_email || user.username || user.role}</div>
                                     </div>
                                     <div className="flex items-center space-x-4">
                                         <label className="flex items-center space-x-2">
@@ -389,16 +389,6 @@ function FormPermissionManager({ formId, formName, getCollectionHook, onClose })
                                             />
                                             <span className="text-sm">可提交</span>
                                         </label>
-                                        {(canView || canSubmit) && (
-                                            <Button
-                                                size="sm"
-                                                variant="danger"
-                                                onClick={() => handleRemovePermission(user.id)}
-                                                disabled={saving}
-                                            >
-                                                <Trash2 className="w-4 h-4" />
-                                            </Button>
-                                        )}
                                     </div>
                                 </div>
                             );

@@ -25,31 +25,55 @@ router.get('/users/:userId', authenticateToken, requireRole('superadmin'), async
 // 获取表单的所有用户权限（仅超级管理员）
 router.get('/forms/:formId', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
+        const permissionColumn = await detectPermissionColumn();
         const result = await pool.query(
-            `SELECT ufp.*, u.name as user_name, u.email as user_email, u.role as user_role
+            `SELECT ufp.*, u.name as user_name, u.username as user_email, u.role as user_role
              FROM user_form_permissions ufp
              JOIN users u ON ufp.user_id = u.id
              WHERE ufp.form_id = $1
              ORDER BY u.name`,
             [req.params.formId]
         );
-        res.json(result.rows);
+        
+        // 统一返回字段名（前端期望 can_submit）
+        const rows = result.rows.map(row => {
+            if (permissionColumn === 'can_edit' && !row.hasOwnProperty('can_submit')) {
+                row.can_submit = row.can_edit || false;
+            }
+            return row;
+        });
+        
+        res.json(rows);
     } catch (error) {
         next(error);
     }
 });
 
+// 检测权限字段名（can_submit 或 can_edit）
+async function detectPermissionColumn() {
+    const result = await pool.query(`
+        SELECT column_name FROM information_schema.columns 
+        WHERE table_name = 'user_form_permissions' AND column_name IN ('can_submit', 'can_edit')
+        ORDER BY column_name
+    `);
+    if (result.rows.some((row) => row.column_name === 'can_submit')) {
+        return 'can_submit';
+    }
+    return 'can_edit';
+}
+
 // 设置用户表单权限（仅超级管理员）
 router.post('/users/:userId/forms/:formId', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
         const { canView = true, canSubmit = false } = req.body;
+        const permissionColumn = await detectPermissionColumn();
 
         const id = generateId();
         await pool.query(
-            `INSERT INTO user_form_permissions (id, user_id, form_id, can_view, can_submit)
+            `INSERT INTO user_form_permissions (id, user_id, form_id, can_view, ${permissionColumn})
              VALUES ($1, $2, $3, $4, $5)
              ON CONFLICT (user_id, form_id)
-             DO UPDATE SET can_view = EXCLUDED.can_view, can_submit = EXCLUDED.can_submit`,
+             DO UPDATE SET can_view = EXCLUDED.can_view, ${permissionColumn} = EXCLUDED.${permissionColumn}`,
             [id, req.params.userId, req.params.formId, canView, canSubmit]
         );
 
@@ -61,7 +85,13 @@ router.post('/users/:userId/forms/:formId', authenticateToken, requireRole('supe
             [req.params.userId, req.params.formId]
         );
 
-        res.json(result.rows[0]);
+        // 统一返回字段名（前端期望 can_submit）
+        const row = result.rows[0];
+        if (row && permissionColumn === 'can_edit' && !row.hasOwnProperty('can_submit')) {
+            row.can_submit = row.can_edit;
+        }
+
+        res.json(row);
     } catch (error) {
         next(error);
     }
@@ -100,10 +130,11 @@ router.post('/users/:userId/batch', authenticateToken, requireRole('superadmin')
             );
 
             // 插入新权限
+            const permissionColumn = await detectPermissionColumn();
             for (const perm of permissions) {
                 const id = generateId();
                 await client.query(
-                    'INSERT INTO user_form_permissions (id, user_id, form_id, can_view, can_submit) VALUES ($1, $2, $3, $4, $5)',
+                    `INSERT INTO user_form_permissions (id, user_id, form_id, can_view, ${permissionColumn}) VALUES ($1, $2, $3, $4, $5)`,
                     [id, req.params.userId, perm.formId, perm.canView || false, perm.canSubmit || false]
                 );
             }

@@ -7,6 +7,7 @@ import { formsRoutes } from './routes/forms.js';
 import { assetsRoutes } from './routes/assets.js';
 import { filesRoutes } from './routes/files.js';
 import { reportsRoutes } from './routes/reports.js';
+import { permissionsRoutes } from './routes/permissions.js';
 import { testConnection } from './config/database.js';
 
 dotenv.config();
@@ -34,6 +35,7 @@ app.use('/api/forms', formsRoutes);
 app.use('/api/assets', assetsRoutes);
 app.use('/api/files', filesRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/permissions', permissionsRoutes);
 
 // 错误处理中间件
 app.use((err, req, res, next) => {
