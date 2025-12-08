@@ -12,6 +12,8 @@ import { ChevronDown } from 'lucide-react';
 export default function AdminPanel({ user, getCollectionHook }) {
   const isCompanyAsset = user.role === 'company_asset';
   const isBaseManager = user.role === 'base_manager';
+  const isCompanyFinance = user.role === 'company_finance';
+  const useUnarchivedDocsView = isBaseManager || isCompanyAsset || isCompanyFinance;
   
   // 所有 hooks 必须在组件顶部无条件调用
   const { data: forms } = getCollectionHook('forms');
@@ -20,7 +22,7 @@ export default function AdminPanel({ user, getCollectionHook }) {
 
   const tabs = useMemo(() => {
     const baseTabs = [
-      { id: 'viewAssets', label: isBaseManager ? '未归档文档' : '登记表格', icon: Box },
+      { id: 'viewAssets', label: useUnarchivedDocsView ? '未归档文档' : '登记表格', icon: Box },
       { id: 'archives', label: '已归档文档', icon: Archive },
       { id: 'reports', label: '统计报表', icon: BarChart3 },
       { id: 'uploadFile', label: '管理文件', icon: UploadCloud },
@@ -31,11 +33,11 @@ export default function AdminPanel({ user, getCollectionHook }) {
     }
 
     return baseTabs;
-  }, [isCompanyAsset, isBaseManager]);
+  }, [isCompanyAsset, useUnarchivedDocsView]);
 
   const [activeTab, setActiveTab] = useState(tabs[0]?.id);
 
-  // 基地负责人：处理表格点击
+  // 处理表格点击
   const handleFormClick = useCallback((form) => {
     if (form) {
       setSelectedFormId(form.id);
@@ -54,9 +56,9 @@ export default function AdminPanel({ user, getCollectionHook }) {
       <Tabs tabs={tabs} activeTab={activeTab} onTabChange={setActiveTab} />
       <div className="mt-6">
         {activeTab === 'viewAssets' && (
-          isBaseManager ? (
+          useUnarchivedDocsView ? (
             <div className="flex flex-col lg:flex-row min-h-[70vh]">
-              {/* 左侧导航栏（仅基地负责人显示） */}
+              {/* 左侧导航栏 */}
               <div className="w-full lg:w-64 bg-white p-4 rounded-xl shadow-lg lg:mr-6 mb-6 lg:mb-0 flex-shrink-0">
                 <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
                   <Database className="w-5 h-5 mr-2 text-gray-600" />
@@ -108,7 +110,7 @@ export default function AdminPanel({ user, getCollectionHook }) {
   );
 }
 
-// 未归档文档树形组件（只读，用于基地负责人）
+// 未归档文档树形组件（只读，用于基地负责人、资产管理员、财务管理员）
 function UnarchivedDocsTreeReadOnly({ tab, forms, assets, user, activeTabId, onFormClick }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const Icon = tab.icon;
@@ -143,7 +145,9 @@ function UnarchivedDocsTreeReadOnly({ tab, forms, assets, user, activeTabId, onF
       {isExpanded && (
         <div className="ml-8 mt-2 space-y-1">
           {unarchivedForms.map(form => {
-            // 基地负责人查看该基地所有经手人的数据
+            // 根据用户角色，后端已经过滤了assets数据
+            // 基地负责人：只能看到自己基地的数据
+            // 资产管理员/财务管理员：可以看到所有有权限的数据
             const formAssets = assets.filter(a => a.formId === form.id);
             const totalRows = formAssets.reduce((sum, asset) => sum + (asset.batchData?.length || 0), 0);
             
