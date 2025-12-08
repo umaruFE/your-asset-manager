@@ -282,6 +282,11 @@ router.post('/:formId/fields', authenticateToken, requireRole('superadmin'), asy
             [id, req.params.formId, fieldKey, name, type, precision, active, resolvedOrder + 1, formula || null, normalizedOptions ? JSON.stringify(normalizedOptions) : null]
         );
 
+        // 同步更新未归档资产记录：为新字段添加空值
+        if (active) {
+            await syncAddFieldToAssets(req.params.formId, id, type);
+        }
+
         const result = await pool.query('SELECT * FROM form_fields WHERE id = $1', [id]);
         // 转换字段名从下划线到驼峰
         res.status(201).json(toCamelCaseObject(result.rows[0]));
@@ -366,6 +371,13 @@ router.put('/:formId/fields/:fieldId', authenticateToken, requireRole('superadmi
             await updateFieldNameReferences(req.params.formId, existingField.form_name, existingField.name, name);
         }
 
+        // 同步更新未归档资产记录
+        // 如果公式变更，需要重新计算（前端会处理）
+        // 如果字段被删除（active=false），需要从资产记录中移除该字段
+        if (active !== undefined && !active) {
+            await syncRemoveFieldFromAssets(req.params.formId, req.params.fieldId);
+        }
+
         const result = await pool.query(
             'SELECT * FROM form_fields WHERE id = $1 AND form_id = $2',
             [req.params.fieldId, req.params.formId]
@@ -414,6 +426,9 @@ router.put('/:formId/fields/order', authenticateToken, requireRole('superadmin')
 // 删除字段
 router.delete('/:formId/fields/:fieldId', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
+        // 先从未归档资产记录中移除该字段
+        await syncRemoveFieldFromAssets(req.params.formId, req.params.fieldId);
+        
         await pool.query(
             'DELETE FROM form_fields WHERE id = $1 AND form_id = $2',
             [req.params.fieldId, req.params.formId]
@@ -786,6 +801,87 @@ async function updateFormNameReferences(oldName, newName) {
         if (updatedFormula !== field.formula) {
             await pool.query('UPDATE form_fields SET formula = $1 WHERE id = $2', [updatedFormula, field.id]);
         }
+    }
+}
+
+// 同步添加字段到未归档资产记录
+async function syncAddFieldToAssets(formId, fieldId, fieldType) {
+    try {
+        // 获取该表单的所有未归档资产记录
+        const assetsResult = await pool.query(
+            `SELECT a.id, a.batch_data, a.fields_snapshot, f.archive_status
+             FROM assets a
+             JOIN forms f ON f.id = a.form_id
+             WHERE a.form_id = $1 AND f.archive_status = 'active'`,
+            [formId]
+        );
+
+        for (const asset of assetsResult.rows) {
+            let batchData = asset.batch_data || [];
+            if (typeof batchData === 'string') {
+                batchData = JSON.parse(batchData);
+            }
+
+            // 为每行数据添加新字段（空值）
+            const updatedBatchData = batchData.map(row => {
+                const newRow = { ...row };
+                // 根据字段类型设置默认值
+                if (fieldType === 'number' || fieldType === 'formula') {
+                    newRow[fieldId] = 0;
+                } else if (fieldType === 'select') {
+                    newRow[fieldId] = '';
+                } else {
+                    newRow[fieldId] = '';
+                }
+                return newRow;
+            });
+
+            // 更新资产记录
+            await pool.query(
+                'UPDATE assets SET batch_data = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+                [JSON.stringify(updatedBatchData), asset.id]
+            );
+        }
+    } catch (error) {
+        console.error('Error syncing field to assets:', error);
+        // 不抛出错误，避免影响字段创建
+    }
+}
+
+// 同步从未归档资产记录中移除字段
+async function syncRemoveFieldFromAssets(formId, fieldId) {
+    try {
+        // 获取该表单的所有未归档资产记录
+        const assetsResult = await pool.query(
+            `SELECT a.id, a.batch_data, f.archive_status
+             FROM assets a
+             JOIN forms f ON f.id = a.form_id
+             WHERE a.form_id = $1 AND f.archive_status = 'active'`,
+            [formId]
+        );
+
+        for (const asset of assetsResult.rows) {
+            let batchData = asset.batch_data || [];
+            if (typeof batchData === 'string') {
+                batchData = JSON.parse(batchData);
+            }
+
+            // 从每行数据中移除该字段
+            const updatedBatchData = batchData.map(row => {
+                const newRow = { ...row };
+                delete newRow[fieldId];
+                return newRow;
+            });
+
+            // 更新资产记录
+            await pool.query(
+                'UPDATE assets SET batch_data = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+                [JSON.stringify(updatedBatchData), asset.id]
+            );
+        }
+    } catch (error) {
+        console.error('Error removing field from assets:', error);
+        // 不抛出错误，避免影响字段删除
     }
 }
 

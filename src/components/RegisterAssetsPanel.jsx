@@ -381,7 +381,7 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
         )}
         {existingAssets.length > 6 && (
             <p className="text-xs text-gray-400 mt-2">
-                仅显示最近 6 条记录，更多内容请前往“我的记录”查看。
+                仅显示最近 6 条记录，更多内容请前往"未归档文档"查看。
             </p>
         )}
       </section>
