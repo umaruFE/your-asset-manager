@@ -248,6 +248,13 @@ export const assetsAPI = {
             body: JSON.stringify(assetData),
         });
     },
+
+    update: async (id, assetData) => {
+        return await apiRequest(`/assets/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify(assetData),
+        });
+    },
 };
 
 // 文件API

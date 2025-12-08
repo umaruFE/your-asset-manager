@@ -47,7 +47,13 @@ export const calculateFormula = (formula, rowData, fields, options = {}) => {
     const valueMap = fields.reduce((acc, field) => {
         // Use field name as key, retrieve value from rowData by field ID
         // Note: Field IDs are used in rowData keys, but names are used in the formula string.
-        const value = Number(rowData[field.id]) || 0;
+        const rawValue = rowData[field.id];
+        // 处理空值、undefined、null、空字符串等情况
+        let value = 0;
+        if (rawValue !== null && rawValue !== undefined && rawValue !== '') {
+            const numValue = Number(rawValue);
+            value = isNaN(numValue) ? 0 : numValue;
+        }
         acc[field.name] = value;
         return acc;
     }, {});
@@ -85,41 +91,98 @@ export const calculateFormula = (formula, rowData, fields, options = {}) => {
             });
     });
 
-    // Regex to identify field names in the formula
-    // Updated to support "表名.字段名" format
-    // This regex looks for sequences that could be field names or "表名.字段名"
-    const fieldNameRegex = /([a-zA-Z0-9\u4e00-\u9fa5\s\(\)\[\]\{\}\uFF08\uFF09]+(?:\.[a-zA-Z0-9\u4e00-\u9fa5\s\(\)\[\]\{\}\uFF08\uFF09]+)?)/g; 
+    // 改进的字段名替换逻辑：按长度从长到短排序，逐个替换
+    let calculationString = formula;
     
-    let calculationString = formula.replace(fieldNameRegex, (match) => {
-        const trimmedMatch = match.trim();
-        // Skip if it's an operator or number
-        if (/^[\+\-\*\/\(\)\s]+$/.test(trimmedMatch) || !isNaN(trimmedMatch)) {
-            return trimmedMatch;
+    // 按字段名长度从长到短排序，优先匹配长字段名（避免部分匹配问题）
+    const sortedFieldNames = Object.keys(valueMap).sort((a, b) => b.length - a.length);
+    
+    // 创建字段名映射（去除空格后的版本，用于模糊匹配）
+    const normalizedFieldMap = {};
+    for (const fieldName of sortedFieldNames) {
+        const normalized = fieldName.replace(/\s+/g, '');
+        normalizedFieldMap[normalized] = { original: fieldName, value: valueMap[fieldName] };
+    }
+    
+    // 逐个替换字段名为其值（使用简单字符串替换，因为字段名是精确匹配的）
+    for (const fieldName of sortedFieldNames) {
+        const fieldValue = valueMap[fieldName];
+        // 转义特殊字符
+        const escapedFieldName = fieldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // 直接字符串替换（字段名在公式中是精确匹配的）
+        if (calculationString.includes(fieldName)) {
+            calculationString = calculationString.replace(new RegExp(escapedFieldName, 'g'), fieldValue);
         }
-        // Replace field NAME (or "表名.字段名") with its value from valueMap
-        return valueMap[trimmedMatch] !== undefined ? valueMap[trimmedMatch] : 0;
-    });
+    }
+    
+    // 如果还有未替换的字段名，尝试去除空格后匹配
+    const remainingParts = calculationString.split(/[\+\-\*\/]/).map(p => p.trim()).filter(p => p && isNaN(p));
+    for (const part of remainingParts) {
+        const normalizedPart = part.replace(/\s+/g, '');
+        if (normalizedFieldMap[normalizedPart]) {
+            const { original, value } = normalizedFieldMap[normalizedPart];
+            calculationString = calculationString.replace(new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value);
+        }
+    }
+    
+    // 清理多余空格，但保留运算符周围的空格
+    calculationString = calculationString.replace(/\s+/g, ' ').trim();
+    
+    // 调试信息：如果公式没有被替换，说明字段名不匹配
+    if (calculationString === formula) {
+        console.warn('[Formula] No fields replaced. Formula:', formula, '| ValueMap keys:', Object.keys(valueMap), '| ValueMap:', valueMap);
+    } else {
+        console.log('[Formula] Replaced:', formula, '->', calculationString, '| ValueMap:', valueMap);
+    }
 
-    // Basic sanitization: only allow numbers and basic arithmetic operators
-    // We strictly check the resulting string before calculation.
+    // 验证计算字符串只包含数字和运算符
+    // 如果验证失败，返回0而不是错误（静默处理）
     if (!/^[\d\s\+\-\*\/\.\(\)]+$/.test(calculationString)) {
-         return 'Error: Invalid characters or unmatched field names in formula';
+        // 静默处理：返回0而不是错误信息
+        const precision = Math.max(0, Math.min(6, Number(targetPrecision) || 2));
+        return parseFloat(Number(0).toFixed(precision));
     }
     
     // Use the Function constructor for safe dynamic calculation instead of eval()
     try {
+        // 如果计算字符串为空或只包含空格，返回0
+        if (!calculationString || calculationString.trim() === '') {
+            return 0;
+        }
+        
+        // 检查是否包含除零操作（例如 "x / 0" 或 "x / 0.0"）
+        // 使用正则表达式检查除以0的情况
+        if (/\/(\s*0\s*[\)\s\+\-\*\/]|0\.0*[\)\s\+\-\*\/]|0\.0*$)/.test(calculationString)) {
+            // 除零情况，返回0而不是错误
+            const precision = Math.max(0, Math.min(6, Number(targetPrecision) || 2));
+            return parseFloat(Number(0).toFixed(precision));
+        }
+        
         // Create an anonymous function that returns the result of the calculation string.
         // This is safer than direct eval as it runs in its own scope.
         const calculate = new Function('return ' + calculationString);
         const result = calculate();
         
-        if (isNaN(result) || !isFinite(result)) return 'Error: Calculation failed';
+        // 允许结果为0（0是有效值）
+        if (result === 0) {
+            const precision = Math.max(0, Math.min(6, Number(targetPrecision) || 2));
+            return parseFloat(Number(result).toFixed(precision));
+        }
+        
+        // 如果结果是无效值（NaN或Infinity），返回0而不是错误
+        if (isNaN(result) || !isFinite(result)) {
+            // 静默处理无效结果，返回0
+            const precision = Math.max(0, Math.min(6, Number(targetPrecision) || 2));
+            return parseFloat(Number(0).toFixed(precision));
+        }
         
         const precision = Math.max(0, Math.min(6, Number(targetPrecision) || 2));
         return parseFloat(Number(result).toFixed(precision));
     } catch (e) {
-        // Catch syntax or runtime errors during calculation
-        return 'Error: ' + e.message;
+        // 捕获计算错误（如除零、语法错误等），返回0而不是错误信息
+        // 静默处理错误，避免显示"Error: Calculation failed"
+        const precision = Math.max(0, Math.min(6, Number(targetPrecision) || 2));
+        return parseFloat(Number(0).toFixed(precision));
     }
 };
 

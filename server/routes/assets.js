@@ -183,4 +183,66 @@ router.post('/', authenticateToken, async (req, res, next) => {
     }
 });
 
+// 更新资产记录（仅限未归档的记录）
+router.put('/:id', authenticateToken, async (req, res, next) => {
+    try {
+        const { batchData, fieldsSnapshot } = req.body;
+
+        if (!batchData || !Array.isArray(batchData)) {
+            return res.status(400).json({ error: 'Invalid request data: batchData is required and must be an array' });
+        }
+
+        // 获取现有记录
+        const existingResult = await pool.query(
+            'SELECT * FROM assets WHERE id = $1',
+            [req.params.id]
+        );
+
+        if (existingResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Asset not found' });
+        }
+
+        const existingAsset = existingResult.rows[0];
+
+        // 权限检查：只有记录提交者可以修改
+        if (req.user.role === 'base_handler' && existingAsset.sub_account_id !== req.user.id) {
+            return res.status(403).json({ error: 'Access denied: You can only edit your own records' });
+        }
+
+        // 检查表单是否已归档（已归档的记录不能修改）
+        const formResult = await pool.query(
+            'SELECT archive_status FROM forms WHERE id = $1',
+            [existingAsset.form_id]
+        );
+        
+        if (formResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Form not found' });
+        }
+
+        if (formResult.rows[0].archive_status !== 'active') {
+            return res.status(400).json({ error: '该表格已归档，无法修改记录' });
+        }
+
+        // 更新记录
+        await pool.query(
+            `UPDATE assets 
+             SET batch_data = $1, 
+                 fields_snapshot = $2,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $3`,
+            [
+                JSON.stringify(batchData),
+                JSON.stringify(fieldsSnapshot || existingAsset.fields_snapshot),
+                req.params.id
+            ]
+        );
+
+        // 返回更新后的记录
+        const updatedResult = await pool.query('SELECT * FROM assets WHERE id = $1', [req.params.id]);
+        res.json(toCamelCaseObject(updatedResult.rows[0]));
+    } catch (error) {
+        next(error);
+    }
+});
+
 export { router as assetsRoutes };

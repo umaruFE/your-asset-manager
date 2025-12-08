@@ -1,45 +1,23 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { Button, LoadingScreen, Plus, Trash2, Check, Download } from '../utils/UI';
+import { Button, Modal, Plus, Trash2, Check, X } from '../utils/UI';
 import { generateId, calculateFormula, formatFieldValue, getStepFromPrecision } from '../utils/helpers';
-import { formsAPI } from '../utils/api';
-import AssetCard, { ViewAssetDetailModal } from './AssetCard';
+import { assetsAPI } from '../utils/api';
 
-export default function RegisterAssetsPanel({ user, form, getCollectionHook, onAssetRegistered }) {
-  const { data: allForms } = getCollectionHook('forms'); // Need all forms to reference fields by name
-  const { data: allAssets } = getCollectionHook('assets'); // Need all assets for cross-form field calculation
+export default function EditAssetPanel({ user, asset, form, getCollectionHook, onSave, onCancel }) {
+  const { data: allForms } = getCollectionHook('forms');
+  const { data: allAssets } = getCollectionHook('assets');
   const { update: updateAssets } = getCollectionHook('assets');
 
-  const [rows, setRows] = useState([{}]); // 初始化一行空数据
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  // 初始化行数据（从asset的batchData加载）
+  const [rows, setRows] = useState([]);
+  const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState(null);
-  const [detailAsset, setDetailAsset] = useState(null);
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportError, setExportError] = useState(null);
+  const [isInitialized, setIsInitialized] = useState(false);
 
   // 确保使用当前表单的最新字段定义，并只取 active 字段
   const activeFields = useMemo(() => {
     return form.fields.filter(f => f.active);
   }, [form.fields]);
-
-  const existingAssets = useMemo(() => {
-    if (!Array.isArray(allAssets)) return [];
-    return allAssets
-      .filter(asset => asset.formId === form.id)
-      .sort((a, b) => b.submittedAt - a.submittedAt);
-  }, [allAssets, form.id]);
-
-  const buildInitialRow = useCallback(() => {
-    return activeFields.reduce((acc, field) => {
-      if (field.type === 'number' || field.type === 'formula') {
-        acc[field.id] = 0;
-      } else if (field.type === 'select') {
-        acc[field.id] = Array.isArray(field.options) && field.options.length > 0 ? field.options[0] : '';
-      } else {
-        acc[field.id] = '';
-      }
-      return acc;
-    }, {});
-  }, [activeFields]);
 
   // 辅助函数：根据当前行数据计算所有公式字段的值
   const calculateRow = useCallback((currentRow) => {
@@ -61,14 +39,43 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
     return newRow;
   }, [form.fields, allForms, allAssets, form.id]);
 
-  // 初始化第一行数据
+  // 初始化数据：从asset加载现有数据
   useEffect(() => {
-    if (activeFields.length > 0) {
-      const baseRow = buildInitialRow();
-      const calculatedInitialRow = calculateRow(baseRow);
-      setRows([calculatedInitialRow]);
+    if (asset && asset.batchData && Array.isArray(asset.batchData) && !isInitialized) {
+      // 使用asset的batchData作为初始数据
+      const initialRows = asset.batchData.map(row => {
+        // 确保所有字段都有值
+        const newRow = { ...row };
+        activeFields.forEach(field => {
+          if (newRow[field.id] === undefined || newRow[field.id] === null) {
+            if (field.type === 'number' || field.type === 'formula') {
+              newRow[field.id] = 0;
+            } else if (field.type === 'select') {
+              newRow[field.id] = Array.isArray(field.options) && field.options.length > 0 ? field.options[0] : '';
+            } else {
+              newRow[field.id] = '';
+            }
+          }
+        });
+        return calculateRow(newRow);
+      });
+      setRows(initialRows);
+      setIsInitialized(true);
     }
-  }, [activeFields, calculateRow, buildInitialRow]);
+  }, [asset, activeFields, isInitialized, calculateRow]);
+
+  const buildInitialRow = useCallback(() => {
+    return activeFields.reduce((acc, field) => {
+      if (field.type === 'number' || field.type === 'formula') {
+        acc[field.id] = 0;
+      } else if (field.type === 'select') {
+        acc[field.id] = Array.isArray(field.options) && field.options.length > 0 ? field.options[0] : '';
+      } else {
+        acc[field.id] = '';
+      }
+      return acc;
+    }, {});
+  }, [activeFields]);
 
   // 处理输入变化 (更新单行数据并重新计算公式)
   const handleFieldChange = (field, rowIndex, rawValue) => {
@@ -87,27 +94,6 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
     setRows(newRows);
   };
 
-  const handleExportActive = async () => {
-    try {
-        setExportError(null);
-        setIsExporting(true);
-        const blob = await formsAPI.exportData(form.id, { scope: 'active' });
-        const fileName = `${form.name || '表格'}_未归档_${new Date().toISOString().slice(0,10)}.xlsx`;
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
-    } catch (err) {
-        setExportError(err.message || '导出失败，请稍后再试');
-    } finally {
-        setIsExporting(false);
-    }
-  };
-  
   // 添加新行
   const addRow = () => {
     const newRow = calculateRow(buildInitialRow());
@@ -120,18 +106,11 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
     const newRows = rows.filter((_, index) => index !== rowIndex);
     setRows(newRows);
   };
-  
-  // 清空表单
-  const resetForm = () => {
-      const initialRow = calculateRow(buildInitialRow());
-      setRows([initialRow]);
-      setError(null);
-  }
 
-  // 提交
-  const handleSubmit = (e) => {
+  // 保存修改
+  const handleSave = async (e) => {
     e.preventDefault();
-    setIsSubmitting(true);
+    setIsSaving(true);
     setError(null);
 
     const nonEmptyRows = rows.filter(row => {
@@ -141,35 +120,32 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
 
     if (nonEmptyRows.length === 0) {
       setError("请至少填写一行有效数据。");
-      setIsSubmitting(false);
+      setIsSaving(false);
       return;
     }
     
     try {
-        const newAssetBatch = {
-            id: generateId(),
-            formId: form.id, // Link to the form template ID
-            formName: form.name,
-            subAccountId: user.id,
-            subAccountName: user.name,
-            submittedAt: Date.now(), 
-            // 存储该表单当前版本的字段快照
-            fieldsSnapshot: form.fields,
-            batchData: nonEmptyRows
-        };
+        // 使用当前表单的最新字段快照
+        await assetsAPI.update(asset.id, {
+            batchData: nonEmptyRows,
+            fieldsSnapshot: form.fields
+        });
 
-        // 更新 assets 集合
-        updateAssets(prevAssets => [...prevAssets, newAssetBatch]);
+        // 更新本地状态
+        updateAssets(prevAssets => {
+            return prevAssets.map(a => 
+                a.id === asset.id 
+                    ? { ...a, batchData: nonEmptyRows, fieldsSnapshot: form.fields }
+                    : a
+            );
+        });
 
-        console.log(`批量记录提交成功! Form ID: ${form.id}`);
-        resetForm();
-        onAssetRegistered(); // 通知父组件关闭标签页并打开"我的记录"
-        
+        onSave();
     } catch (err) {
-      console.error("提交记录失败:", err);
-      setError(err.message || "提交失败，请重试。");
+      console.error("更新记录失败:", err);
+      setError(err.message || "更新失败，请重试。");
     } finally {
-      setIsSubmitting(false);
+      setIsSaving(false);
     }
   };
 
@@ -178,9 +154,7 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
     const currentValue = row[field.id] ?? (field.type === 'number' ? 0 : '');
 
     if (field.type === 'formula') {
-        // 如果计算结果是错误字符串，显示0
-        const safeValue = typeof currentValue === 'string' && currentValue.startsWith('Error:') ? 0 : currentValue;
-        const displayValue = formatFieldValue(field, safeValue);
+        const displayValue = formatFieldValue(field, currentValue);
         return (
             <div className="mt-1 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-blue-700 font-semibold">
                 {displayValue || '0'}
@@ -256,27 +230,23 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
     );
   };
 
+  if (!isInitialized) {
+    return (
+      <Modal isOpen={true} onClose={onCancel} title="编辑记录">
+        <div className="p-4">正在加载记录数据...</div>
+      </Modal>
+    );
+  }
+
   return (
-    <div className="space-y-10">
-      <form onSubmit={handleSubmit} className="space-y-6">
+    <Modal isOpen={true} onClose={onCancel} title={`编辑记录 - ${form.name}`}>
+      <form onSubmit={handleSave} className="space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
-                <h3 className="text-2xl font-bold text-gray-800">批量登记</h3>
-                <p className="text-sm text-gray-500 mt-1">填写当前表格的未归档数据，保存后立即生效。</p>
+                <h3 className="text-xl font-bold text-gray-800">修改记录数据</h3>
+                <p className="text-sm text-gray-500 mt-1">修改后点击保存即可更新记录。</p>
             </div>
             <div className="flex gap-3 flex-wrap">
-                <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleExportActive}
-                    disabled={isExporting}
-                >
-                    <Download className="w-4 h-4 mr-2" />
-                    {isExporting ? '导出中...' : '导出未归档 Excel'}
-                </Button>
-                <Button type="button" variant="outline" onClick={resetForm}>
-                    重置本表单
-                </Button>
                 <Button type="button" variant="outline" onClick={addRow}>
                     <Plus className="w-4 h-4 mr-2" />
                     添加一行
@@ -289,19 +259,14 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
                 {error}
             </div>
         )}
-        {exportError && (
-            <div className="p-3 bg-yellow-50 border border-yellow-300 text-yellow-700 rounded-lg">
-                {exportError}
-            </div>
-        )}
 
-        <div className="space-y-6">
+        <div className="space-y-6 max-h-[60vh] overflow-y-auto">
             {rows.map((row, rowIndex) => (
                 <div key={rowIndex} className="bg-white border border-gray-200 rounded-2xl shadow-sm p-5 space-y-4">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                         <div>
                             <p className="text-lg font-semibold text-gray-800">第 {rowIndex + 1} 行</p>
-                            <p className="text-xs text-gray-500">填写下列字段后系统会自动保存并计算公式字段</p>
+                            <p className="text-xs text-gray-500">修改字段后系统会自动计算公式字段</p>
                         </div>
                         <div className="flex gap-2">
                             <Button
@@ -342,57 +307,30 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
             ))}
         </div>
 
-        <div className="flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 sm:space-x-4">
+        <div className="flex justify-end space-x-3 pt-4 border-t">
+            <Button
+                type="button"
+                variant="outline"
+                onClick={onCancel}
+                disabled={isSaving}
+            >
+                <X className="w-4 h-4 mr-2" />
+                取消
+            </Button>
             <Button
                 type="submit"
                 variant="primary"
-                disabled={isSubmitting}
-                className="w-full sm:w-auto"
+                disabled={isSaving}
             >
-                {isSubmitting ? (
+                {isSaving ? (
                     <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
                 ) : (
                     <Check className="w-5 h-5 mr-2" />
                 )}
-                全部提交
+                {isSaving ? '保存中...' : '保存修改'}
             </Button>
         </div>
       </form>
-
-      <section>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-4 gap-3">
-            <div>
-                <h4 className="text-xl font-semibold text-gray-800">未归档记录预览</h4>
-                <p className="text-sm text-gray-500">提交后即可在此处查看最新记录，归档后会移动到“已归档文档”</p>
-            </div>
-            <span className="text-sm text-gray-500">共 {existingAssets.length} 条记录</span>
-        </div>
-
-        {existingAssets.length === 0 ? (
-            <div className="p-4 border border-dashed border-gray-300 rounded-xl text-center text-gray-500">
-                暂无记录。提交后即可实时查看。
-            </div>
-        ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {existingAssets.slice(0, 6).map(asset => (
-                    <AssetCard key={asset.id} asset={asset} onClick={() => setDetailAsset(asset)} />
-                ))}
-            </div>
-        )}
-        {existingAssets.length > 6 && (
-            <p className="text-xs text-gray-400 mt-2">
-                仅显示最近 6 条记录，更多内容请前往“我的记录”查看。
-            </p>
-        )}
-      </section>
-
-      {detailAsset && (
-        <ViewAssetDetailModal
-            asset={detailAsset}
-            isOpen={!!detailAsset}
-            onClose={() => setDetailAsset(null)}
-        />
-      )}
-    </div>
+    </Modal>
   );
 }

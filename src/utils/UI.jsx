@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, X, AlertTriangle, Database, RefreshCw, Check, UploadCloud, Box, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronDown, X, AlertTriangle, Database, RefreshCw, Check, UploadCloud, Box, ChevronLeft, ChevronRight, Edit } from 'lucide-react';
 
 // 1. Button
 export function Button({ variant = 'primary', size = 'md', className = '', children, ...props }) {
@@ -40,7 +40,7 @@ export function Modal({ isOpen, onClose, title, children }) {
       ></div>
       
       {/* 模态框内容 */}
-      <div className="relative bg-white w-full max-w-2xl p-6 rounded-2xl shadow-xl m-4 transition-all transform scale-100 opacity-100">
+      <div className="relative bg-white w-full max-w-5xl p-6 rounded-2xl shadow-xl m-4 transition-all transform scale-100 opacity-100">
         <div className="flex justify-between items-center pb-4 border-b border-gray-200">
           <h3 className="text-xl font-semibold text-gray-800">{title}</h3>
           <Button variant="outline" size="icon" onClick={onClose} className="rounded-full">
@@ -216,5 +216,6 @@ export {
   UploadCloud,
   Box,
   Archive,
+  Edit,
   Loader as Spinner
 } from 'lucide-react';

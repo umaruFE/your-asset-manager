@@ -1,8 +1,9 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
-import { Button, LoadingScreen, Modal, useModal, Plus, FileText, Database, Box, ChevronLeft, ChevronRight, X, Archive } from '../utils/UI';
+import { Button, LoadingScreen, Modal, useModal, Plus, FileText, Database, Box, ChevronLeft, ChevronRight, X, Archive, Edit } from '../utils/UI';
 import RegisterAssetsPanel from './RegisterAssetsPanel';
 import ViewFilesPanel from './ViewFilesPanel';
 import ArchivedDocumentsPanel from './ArchivedDocumentsPanel';
+import EditAssetPanel from './EditAssetPanel';
 
 const STATIC_TABS = {
     myAssets: { id: 'myAssets', label: '我的记录', icon: Box, type: 'static' },
@@ -295,7 +296,7 @@ export default function SubAccountPanel({ user, getCollectionHook }) {
 
 // 1a. 查看我的资产 (Updated to show all forms)
 function ViewMyAssetsPanel({ user, getCollectionHook, forms }) {
-  const { data: assets, loading, error } = getCollectionHook('assets');
+  const { data: assets, loading, error, update: updateAssets } = getCollectionHook('assets');
   
   // Group assets by form for easier display
   const groupedAssets = useMemo(() => {
@@ -304,9 +305,9 @@ function ViewMyAssetsPanel({ user, getCollectionHook, forms }) {
       .sort((a, b) => b.submittedAt - a.submittedAt);
       
     return userAssets.reduce((acc, asset) => {
-        const form = forms.find(f => f.id === asset.formId) || { name: asset.formName || '未知表格', id: 'unknown' };
+        const form = forms.find(f => f.id === asset.formId) || { name: asset.formName || '未知表格', id: 'unknown', archiveStatus: 'active' };
         if (!acc[form.id]) {
-            acc[form.id] = { formName: form.name, assets: [] };
+            acc[form.id] = { formName: form.name, form: form, assets: [] };
         }
         acc[form.id].assets.push(asset);
         return acc;
@@ -315,6 +316,28 @@ function ViewMyAssetsPanel({ user, getCollectionHook, forms }) {
   }, [assets, user.id, forms]);
 
   const viewModal = useModal();
+  const editModal = useModal();
+  const [editingAsset, setEditingAsset] = useState(null);
+
+  // 检查记录是否可以编辑（表单未归档）
+  const canEditAsset = useCallback((asset) => {
+    const form = forms.find(f => f.id === asset.formId);
+    return form && form.archiveStatus === 'active';
+  }, [forms]);
+
+  const handleEdit = useCallback((asset) => {
+    if (canEditAsset(asset)) {
+      setEditingAsset(asset);
+      editModal.open(asset);
+    }
+  }, [canEditAsset, editModal]);
+
+  const handleEditSuccess = useCallback(() => {
+    editModal.close();
+    setEditingAsset(null);
+    // 刷新数据
+    updateAssets(prev => [...prev]);
+  }, [editModal, updateAssets]);
 
   if (loading) {
     return <LoadingScreen message="正在加载我的记录..." />;
@@ -339,13 +362,29 @@ function ViewMyAssetsPanel({ user, getCollectionHook, forms }) {
                             <span className="text-sm font-normal ml-3 text-gray-400">({groupedAssets[formId].assets.length} 条)</span>
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            {groupedAssets[formId].assets.map(asset => (
-                                <AssetCard 
-                                    key={asset.id} 
-                                    asset={asset} 
-                                    onClick={() => viewModal.open(asset)}
-                                />
-                            ))}
+                            {groupedAssets[formId].assets.map(asset => {
+                                const canEdit = canEditAsset(asset);
+                                return (
+                                    <div key={asset.id} className="relative">
+                                        <AssetCard 
+                                            asset={asset} 
+                                            onClick={() => viewModal.open(asset)}
+                                        />
+                                        {canEdit && (
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleEdit(asset);
+                                                }}
+                                                className="absolute bottom-3 right-3 p-2 bg-blue-600 text-white rounded-lg shadow-lg hover:bg-blue-700 transition-colors z-10"
+                                                title="编辑记录"
+                                            >
+                                                <Edit className="w-4 h-4" />
+                                            </button>
+                                        )}
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
                 ))}
@@ -357,6 +396,20 @@ function ViewMyAssetsPanel({ user, getCollectionHook, forms }) {
             asset={viewModal.props}
             isOpen={viewModal.isOpen}
             onClose={viewModal.close}
+          />
+        )}
+
+        {editModal.isOpen && editingAsset && (
+          <EditAssetPanel
+            user={user}
+            asset={editingAsset}
+            form={groupedAssets[editingAsset.formId]?.form || forms.find(f => f.id === editingAsset.formId)}
+            getCollectionHook={getCollectionHook}
+            onSave={handleEditSuccess}
+            onCancel={() => {
+              editModal.close();
+              setEditingAsset(null);
+            }}
           />
         )}
       </div>
