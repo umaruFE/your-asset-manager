@@ -146,12 +146,30 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
 
         const report = result.rows[0];
 
+        // 调试日志：检查权限
+        console.log('[Report Execute] Checking access for user:', {
+            userId: req.user.id,
+            role: req.user.role,
+            reportId: report.id,
+            createdBy: report.created_by,
+            accessRules: report.access_rules
+        });
+
         if (!canAccessReport(report, req.user)) {
+            console.warn('[Report Execute] Access denied for user:', req.user.id, 'role:', req.user.role);
             return res.status(403).json({ error: 'Access denied' });
         }
 
         const config = report.config;
         let { selectedForms, selectedFields, aggregations, calculations, filters } = config;
+        
+        // 调试日志：记录用户信息和过滤条件
+        console.log('[Report Execute] User info:', {
+            id: req.user.id,
+            role: req.user.role,
+            baseId: req.user.baseId
+        });
+        console.log('[Report Execute] Selected forms:', selectedForms);
 
         // 兼容处理：如果selectedFields是字符串数组（字段名称），需要转换为对象数组
         // 需要从表单中查找字段ID
@@ -196,6 +214,60 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 }
             }
         }
+        
+        // 检查是否有聚合函数（需要在构建字段之前检查）
+        const hasAggregations = aggregations && aggregations.length > 0;
+        
+        // 关键修复：为跨表单聚合构建字段ID映射
+        // 对于每个分组字段，从所有选中表单中查找同名字段的所有字段ID
+        const groupingFieldIdsMap = {}; // fieldName -> [fieldId1, fieldId2, ...]
+        if (selectedForms && selectedForms.length > 1 && selectedFields && selectedFields.length > 0) {
+            // 先确定哪些字段用于分组
+            const groupByFieldIds = new Set();
+            if (hasAggregations && selectedFields && selectedFields.length > 0) {
+                const aggregatedFieldIds = new Set();
+                if (aggregations && aggregations.length > 0) {
+                    aggregations.forEach(agg => {
+                        if (agg.fieldId) {
+                            aggregatedFieldIds.add(agg.fieldId);
+                        }
+                    });
+                }
+                selectedFields.forEach(field => {
+                    if (field && field.fieldId && !aggregatedFieldIds.has(field.fieldId)) {
+                        groupByFieldIds.add(field.fieldId);
+                    }
+                });
+            }
+            
+            // 为每个分组字段查找所有表单中的字段ID
+            for (const field of selectedFields) {
+                if (field && field.fieldName && groupByFieldIds.has(field.fieldId)) {
+                    const fieldName = field.fieldName;
+                    if (!groupingFieldIdsMap[fieldName]) {
+                        groupingFieldIdsMap[fieldName] = [];
+                    }
+                    // 从所有选中表单中查找同名字段的所有字段ID
+                    for (const formId of selectedForms) {
+                        const fieldsResult = await pool.query(
+                            'SELECT id FROM form_fields WHERE form_id = $1 AND name = $2 AND active = true',
+                            [formId, fieldName]
+                        );
+                        if (fieldsResult.rows.length > 0) {
+                            const foundFieldId = fieldsResult.rows[0].id;
+                            if (!groupingFieldIdsMap[fieldName].includes(foundFieldId)) {
+                                groupingFieldIdsMap[fieldName].push(foundFieldId);
+                            }
+                        }
+                    }
+                    // 也添加字段名称本身（因为batch_data中可能使用字段名称作为键）
+                    if (!groupingFieldIdsMap[fieldName].includes(fieldName)) {
+                        groupingFieldIdsMap[fieldName].unshift(fieldName); // 优先使用字段名称
+                    }
+                }
+            }
+            console.log('[Report Execute] Grouping field IDs map:', JSON.stringify(groupingFieldIdsMap, null, 2));
+        }
 
         // 构建查询 - 从资产数据中提取字段值
         // 由于数据存储在JSONB中，需要使用PostgreSQL的JSON函数
@@ -203,9 +275,6 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
         let selectClauses = [];
         const queryParams = [];
         let paramIndex = 1;
-
-        // 检查是否有聚合函数（需要在构建字段之前检查）
-        const hasAggregations = aggregations && aggregations.length > 0;
         
         // 确定哪些字段用于分组（非聚合字段，且不是数字类型或不是聚合目标）
         // 用于分组的字段通常是文本类型字段，如"鱼类品种"
@@ -248,34 +317,56 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             }
         }
 
+        // 聚合函数名到中文的映射
+        const getAggregationSuffix = (func) => {
+            const funcUpper = func.toUpperCase();
+            const suffixMap = {
+                'SUM': '求和',
+                'AVG': '平均值',
+                'COUNT': '计数',
+                'MAX': '最大值',
+                'MIN': '最小值'
+            };
+            return suffixMap[funcUpper] || funcUpper;
+        };
+
         // 添加聚合函数
+        // 关键修复：对于跨表单聚合，需要确保每个聚合字段只从它所属的表单中聚合数据
         for (const agg of aggregations || []) {
             if (agg.formId && agg.fieldId && agg.function) {
                 const func = agg.function.toUpperCase(); // SUM, AVG, COUNT, MAX, MIN
                 const fieldId = agg.fieldId;
                 const fieldName = agg.fieldName || fieldId;
+                const suffix = getAggregationSuffix(func);
                 
-                // 从batch_row中提取数值并聚合
-                // 尝试字段ID，如果不存在则尝试字段名称
+                // 使用 CASE WHEN 确保只聚合该表单的数据
                 if (func === 'COUNT') {
                     // COUNT可以用于任何类型
-                    selectClauses.push(`${func}(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')) as "${agg.fieldName}_${func}"`);
+                    const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') ELSE NULL END)`;
+                    selectClauses.push(`${aggExpression} as "${agg.fieldName}_${suffix}"`);
                 } else {
                     // 其他聚合函数需要数字类型
-                    // 使用COALESCE尝试字段ID和字段名称，然后转换为数字
-                    selectClauses.push(`${func}(CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC)) as "${agg.fieldName}_${func}"`);
+                    const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
+                    // 对于"数量（尾）"这样的字段，SUM结果应该是整数，需要四舍五入
+                    // 检查字段名称是否包含"数量"或"尾"，如果是SUM函数，则四舍五入为整数
+                    const shouldRoundToInteger = func === 'SUM' && (fieldName.includes('数量') || fieldName.includes('尾'));
+                    const finalExpression = shouldRoundToInteger 
+                        ? `ROUND(COALESCE(${aggExpression}, 0))`
+                        : `COALESCE(${aggExpression}, 0)`;
+                    selectClauses.push(`${finalExpression} as "${agg.fieldName}_${suffix}"`);
                 }
             }
         }
 
-        // 创建聚合字段映射：fieldId -> 聚合列名（例如 "转入重量 (kg)_SUM"）
+        // 创建聚合字段映射：fieldId -> 聚合列名（例如 "转入重量 (kg)_求和"）
         const aggregationColumnMap = {};
         if (hasAggregations && aggregations) {
             for (const agg of aggregations) {
                 if (agg.formId && agg.fieldId && agg.function) {
                     const func = agg.function.toUpperCase();
                     const fieldName = agg.fieldName || agg.fieldId;
-                    aggregationColumnMap[agg.fieldId] = `${fieldName}_${func}`;
+                    const suffix = getAggregationSuffix(func);
+                    aggregationColumnMap[agg.fieldId] = `${fieldName}_${suffix}`;
                 }
             }
         }
@@ -328,11 +419,23 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             const innerSelectClauses = [];
             
             // 只添加用于分组的字段（非聚合字段）
+            // 关键修复：对于跨表单聚合，分组字段需要从所有表单中都能提取到
+            // 使用字段名称作为主要匹配依据，因为不同表单中同名字段的ID可能不同
             for (const field of selectedFields || []) {
                 if (field.formId && field.fieldId && groupByFieldIds.has(field.fieldId)) {
-                    const fieldId = field.fieldId;
-                    const fieldName = field.fieldName || fieldId;
-                    innerSelectClauses.push(`COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') as "${fieldName}"`);
+                    const fieldName = field.fieldName || field.fieldId;
+                    
+                    // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
+                    if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
+                        const allFieldIds = groupingFieldIdsMap[fieldName];
+                        // 构建COALESCE链，尝试所有可能的字段ID和字段名称
+                        const coalesceChain = allFieldIds.map(id => `batch_row->>'${id}'`).join(', ');
+                        innerSelectClauses.push(`COALESCE(${coalesceChain}) as "${fieldName}"`);
+                    } else {
+                        // 单表单或未构建映射，使用原来的逻辑
+                        const fieldId = field.fieldId;
+                        innerSelectClauses.push(`COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') as "${fieldName}"`);
+                    }
                 }
             }
             
@@ -342,16 +445,27 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     const func = agg.function.toUpperCase();
                     const fieldId = agg.fieldId;
                     const fieldName = agg.fieldName || fieldId;
+                    const suffix = getAggregationSuffix(func);
                     
+                    // 关键修复：对于跨表单聚合，需要确保每个聚合字段只从它所属的表单中聚合数据
+                    // 使用 CASE WHEN 确保只聚合该表单的数据，这样即使其他表单没有该字段，也不会影响聚合结果
                     if (func === 'COUNT') {
-                        innerSelectClauses.push(`${func}(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')) as "${agg.fieldName}_${func}"`);
+                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') ELSE NULL END)`;
+                        innerSelectClauses.push(`${aggExpression} as "${agg.fieldName}_${suffix}"`);
                     } else {
-                        innerSelectClauses.push(`${func}(CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC)) as "${agg.fieldName}_${func}"`);
+                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
+                        // 对于"数量（尾）"这样的字段，SUM结果应该是整数，需要四舍五入
+                        // 检查字段名称是否包含"数量"或"尾"，如果是SUM函数，则四舍五入为整数
+                        const shouldRoundToInteger = func === 'SUM' && (fieldName.includes('数量') || fieldName.includes('尾'));
+                        const finalExpression = shouldRoundToInteger 
+                            ? `ROUND(COALESCE(${aggExpression}, 0))`
+                            : `COALESCE(${aggExpression}, 0)`;
+                        innerSelectClauses.push(`${finalExpression} as "${agg.fieldName}_${suffix}"`);
                     }
                 }
             }
             
-            let innerQuery = `SELECT ${innerSelectClauses.join(', ')} FROM assets, jsonb_array_elements(batch_data) as batch_row WHERE 1=1`;
+            let innerQuery = `SELECT ${innerSelectClauses.join(', ')} FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = 'active'`;
                 
                 // 添加表单过滤（在GROUP BY之前）
                 if (selectedForms && selectedForms.length > 0) {
@@ -363,17 +477,31 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 if (req.user.role === 'base_manager' && req.user.baseId) {
                     innerQuery += ` AND base_id = $${paramIndex++}`;
                     queryParams.push(req.user.baseId);
+                    console.log('[Report Execute] Added base filter for base_manager, baseId:', req.user.baseId);
+                } else if (req.user.role === 'base_manager') {
+                    console.warn('[Report Execute] base_manager user has no baseId!');
                 }
                 
                 // 如果有非聚合字段，需要添加GROUP BY（必须在WHERE之后）
                 // 只对用于分组的字段进行GROUP BY（不包括被聚合的字段）
+                // 关键修复：对于跨表单聚合，GROUP BY 也需要使用所有可能的字段ID
                 if (groupByFieldIds.size > 0) {
                     const groupByFields = selectedFields
                         .filter(field => field && typeof field === 'object' && field.formId && field.fieldId && groupByFieldIds.has(field.fieldId))
                         .map(field => {
-                            const fieldId = field.fieldId;
-                            const fieldName = field.fieldName || fieldId;
-                            return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
+                            const fieldName = field.fieldName || field.fieldId;
+                            
+                            // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
+                            if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
+                                const allFieldIds = groupingFieldIdsMap[fieldName];
+                                // 构建COALESCE链，尝试所有可能的字段ID和字段名称
+                                const coalesceChain = allFieldIds.map(id => `batch_row->>'${id}'`).join(', ');
+                                return `COALESCE(${coalesceChain})`;
+                            } else {
+                                // 单表单或未构建映射，使用原来的逻辑
+                                const fieldId = field.fieldId;
+                                return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
+                            }
                         });
                     
                     if (groupByFields.length > 0) {
@@ -401,7 +529,8 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     if (agg.formId && agg.fieldId && agg.function) {
                         const func = agg.function.toUpperCase();
                         const fieldName = agg.fieldName || agg.fieldId;
-                        const aggColName = `${fieldName}_${func}`;
+                        const suffix = getAggregationSuffix(func);
+                        const aggColName = `${fieldName}_${suffix}`;
                         const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
                         outerSelectClauses.push(`subq."${escapedColName}"`);
                     }
@@ -418,16 +547,16 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                             if (['+', '-', '*', '/', '(', ')'].includes(match) || !isNaN(match)) {
                                 return match;
                             }
-                            // 如果该字段有聚合函数，使用聚合列名
+                            // 如果该字段有聚合函数，使用聚合列名，并用 COALESCE 处理 NULL
                             if (aggregationColumnMap[match]) {
                                 const aggColName = aggregationColumnMap[match].replace(/"/g, ''); // 移除引号
                                 const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
-                                return `subq."${escapedColName}"`;
+                                return `COALESCE(subq."${escapedColName}", 0)`;
                             }
-                            // 否则使用普通字段名
+                            // 否则使用普通字段名，并用 COALESCE 处理 NULL
                             const fieldName = fieldNameMap[match] || match;
                             const escapedFieldName = fieldName.replace(/"/g, '""'); // 转义双引号
-                            return `subq."${escapedFieldName}"`;
+                            return `COALESCE(subq."${escapedFieldName}", 0)`;
                         });
                         const escapedCalcName = calc.name.replace(/"/g, '""'); // 转义双引号
                         outerSelectClauses.push(`(${expr}) as "${escapedCalcName}"`);
@@ -437,7 +566,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 query = `SELECT ${outerSelectClauses.join(', ')} FROM (${innerQuery}) as subq`;
         } else if (hasAggregations) {
             // 有聚合函数但没有计算字段，直接使用聚合查询
-            query = `SELECT ${selectClauses.join(', ')} FROM assets, jsonb_array_elements(batch_data) as batch_row WHERE 1=1`;
+            query = `SELECT ${selectClauses.join(', ')} FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = 'active'`;
             
             // 添加表单过滤（在GROUP BY之前）
             if (selectedForms && selectedForms.length > 0) {
@@ -449,17 +578,31 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             if (req.user.role === 'base_manager' && req.user.baseId) {
                 query += ` AND base_id = $${paramIndex++}`;
                 queryParams.push(req.user.baseId);
+                console.log('[Report Execute] Added base filter for base_manager, baseId:', req.user.baseId);
+            } else if (req.user.role === 'base_manager') {
+                console.warn('[Report Execute] base_manager user has no baseId!');
             }
             
             // 如果有非聚合字段，需要添加GROUP BY（必须在WHERE之后）
             // 只对用于分组的字段进行GROUP BY（不包括被聚合的字段）
+            // 关键修复：对于跨表单聚合，GROUP BY 也需要使用所有可能的字段ID
             if (groupByFieldIds.size > 0) {
                 const groupByFields = selectedFields
                     .filter(field => field && typeof field === 'object' && field.formId && field.fieldId && groupByFieldIds.has(field.fieldId))
                     .map(field => {
-                        const fieldId = field.fieldId;
-                        const fieldName = field.fieldName || fieldId;
-                        return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
+                        const fieldName = field.fieldName || field.fieldId;
+                        
+                        // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
+                        if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
+                            const allFieldIds = groupingFieldIdsMap[fieldName];
+                            // 构建COALESCE链，尝试所有可能的字段ID和字段名称
+                            const coalesceChain = allFieldIds.map(id => `batch_row->>'${id}'`).join(', ');
+                            return `COALESCE(${coalesceChain})`;
+                        } else {
+                            // 单表单或未构建映射，使用原来的逻辑
+                            const fieldId = field.fieldId;
+                            return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
+                        }
                     });
                 
                 if (groupByFields.length > 0) {
@@ -468,7 +611,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             }
         } else {
             // 没有聚合函数，直接展开batch_data
-            query = `SELECT ${selectClauses.join(', ')} FROM assets, jsonb_array_elements(batch_data) as batch_row WHERE 1=1`;
+            query = `SELECT ${selectClauses.join(', ')} FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = 'active'`;
             
             // 添加表单过滤
             if (selectedForms && selectedForms.length > 0) {
@@ -480,6 +623,9 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             if (req.user.role === 'base_manager' && req.user.baseId) {
                 query += ` AND base_id = $${paramIndex++}`;
                 queryParams.push(req.user.baseId);
+                console.log('[Report Execute] Added base filter for base_manager, baseId:', req.user.baseId);
+            } else if (req.user.role === 'base_manager') {
+                console.warn('[Report Execute] base_manager user has no baseId!');
             }
         }
 
@@ -502,8 +648,8 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 console.log('No rows returned. Checking if there are any assets...');
                 // 检查是否有匹配的资产
                 let checkQuery = hasAggregations 
-                    ? 'SELECT COUNT(*) as count FROM assets, jsonb_array_elements(batch_data) as batch_row WHERE 1=1'
-                    : 'SELECT COUNT(*) as count FROM assets WHERE 1=1';
+                    ? 'SELECT COUNT(*) as count FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = \'active\''
+                    : 'SELECT COUNT(*) as count FROM assets INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = \'active\'';
                 const checkParams = [];
                 let checkParamIndex = 1;
                 if (selectedForms && selectedForms.length > 0) {
@@ -533,10 +679,31 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             return res.status(400).json(friendlyError);
         }
 
+        // 过滤掉总计行（分组字段为 0、空字符串或 null 的行）
+        let filteredRows = queryResult.rows;
+        if (selectedFields && selectedFields.length > 0) {
+            filteredRows = queryResult.rows.filter(row => {
+                // 检查所有分组字段，如果都是 0、空字符串或 null，则认为是总计行
+                let isSummaryRow = true;
+                for (const field of selectedFields) {
+                    if (field.formId && field.fieldId) {
+                        const fieldName = field.fieldName || field.fieldId;
+                        const value = row[fieldName];
+                        // 如果字段值不是 0、空字符串或 null，则不是总计行
+                        if (value !== 0 && value !== '0' && value !== '' && value != null && value !== undefined) {
+                            isSummaryRow = false;
+                            break;
+                        }
+                    }
+                }
+                return !isSummaryRow;
+            });
+        }
+
         res.json({
             report: report,
-            data: applySortOrders(queryResult.rows, config.sortOrders),
-            total: queryResult.rows.length
+            data: applySortOrders(filteredRows, config.sortOrders),
+            total: filteredRows.length
         });
     } catch (error) {
         console.error('Report execution error:', error);
@@ -619,16 +786,41 @@ function normalizeAccessRules(rules) {
         users: []
     };
 
-    if (!rules || typeof rules !== 'object') {
+    // 如果 rules 是 null、undefined，返回默认规则
+    if (rules === null || rules === undefined) {
+        console.log('[normalizeAccessRules] Rules is null/undefined, using default rules');
+        return defaultRules;
+    }
+
+    // 如果 rules 是字符串，尝试解析为 JSON
+    let parsedRules = rules;
+    if (typeof rules === 'string') {
+        try {
+            parsedRules = JSON.parse(rules);
+        } catch (e) {
+            console.warn('[normalizeAccessRules] Failed to parse rules as JSON:', e);
+            return defaultRules;
+        }
+    }
+
+    // 如果解析后不是对象，返回默认规则
+    if (typeof parsedRules !== 'object' || Array.isArray(parsedRules)) {
+        console.log('[normalizeAccessRules] Rules is not an object, using default rules');
+        return defaultRules;
+    }
+
+    // 如果是空对象，返回默认规则
+    if (Object.keys(parsedRules).length === 0) {
+        console.log('[normalizeAccessRules] Rules is empty object, using default rules');
         return defaultRules;
     }
 
     const normalized = {
-        roles: Array.isArray(rules.roles)
-            ? Array.from(new Set(rules.roles.filter(role => typeof role === 'string' && role.trim().length > 0)))
+        roles: Array.isArray(parsedRules.roles)
+            ? Array.from(new Set(parsedRules.roles.filter(role => typeof role === 'string' && role.trim().length > 0)))
             : defaultRules.roles,
-        users: Array.isArray(rules.users)
-            ? Array.from(new Set(rules.users.filter(userId => typeof userId === 'string' && userId.trim().length > 0)))
+        users: Array.isArray(parsedRules.users)
+            ? Array.from(new Set(parsedRules.users.filter(userId => typeof userId === 'string' && userId.trim().length > 0)))
             : []
     };
 
@@ -636,16 +828,36 @@ function normalizeAccessRules(rules) {
         normalized.roles = defaultRules.roles;
     }
 
+    console.log('[normalizeAccessRules] Normalized rules:', normalized);
     return normalized;
 }
 
 function canAccessReport(report, user) {
     if (!report) return false;
-    if (user.role === 'superadmin' || report.created_by === user.id) {
+    
+    // 兼容处理：created_by 可能是下划线命名（数据库原始）或驼峰命名（经过转换）
+    const createdBy = report.created_by || report.createdBy;
+    if (user.role === 'superadmin' || createdBy === user.id) {
         return true;
     }
 
-    const rules = normalizeAccessRules(report.access_rules);
+    // 兼容处理：access_rules 可能是下划线命名（数据库原始）或驼峰命名（经过转换）
+    const accessRules = report.access_rules || report.accessRules;
+    const rules = normalizeAccessRules(accessRules);
+    
+    // 调试日志
+    console.log('[canAccessReport] Checking access:', {
+        userRole: user.role,
+        userId: user.id,
+        reportId: report.id,
+        createdBy: createdBy,
+        accessRules: accessRules,
+        allowedRoles: rules.roles,
+        allowedUsers: rules.users,
+        hasRoleAccess: rules.roles.includes(user.role),
+        hasUserAccess: rules.users.includes(user.id)
+    });
+    
     return rules.roles.includes(user.role) || rules.users.includes(user.id);
 }
 

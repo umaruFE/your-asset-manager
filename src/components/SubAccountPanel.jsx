@@ -360,7 +360,7 @@ function UnarchivedDocsTree({ tab, forms, assets, user, activeTabId, onFormClick
           {unarchivedForms.map(form => {
             const formAssets = assets.filter(a => a.formId === form.id && a.subAccountId === user.id);
             const totalRows = formAssets.reduce((sum, asset) => sum + (asset.batchData?.length || 0), 0);
-            
+      
             return (
               <button
                 key={form.id}
@@ -388,7 +388,7 @@ function UnarchivedDocsTree({ tab, forms, assets, user, activeTabId, onFormClick
 function ViewMyAssetsPanel({ user, getCollectionHook, forms, initialFormId = null }) {
   const { data: assets, loading, error, update: updateAssets } = getCollectionHook('assets');
   const [selectedFormId, setSelectedFormId] = useState(initialFormId);
-  
+
   // 只显示未归档的表格（archiveStatus === 'active'）
   const unarchivedForms = useMemo(() => {
     return forms.filter(f => f.archiveStatus === 'active' && f.isActive)
@@ -441,7 +441,7 @@ function ViewMyAssetsPanel({ user, getCollectionHook, forms, initialFormId = nul
   if (error) {
     return <div className="text-red-500">加载记录失败: {error}</div>;
   }
-
+  
   if (unarchivedForms.length === 0) {
     return (
       <div>
@@ -452,7 +452,7 @@ function ViewMyAssetsPanel({ user, getCollectionHook, forms, initialFormId = nul
   }
 
   return (
-    <div>
+      <div>
       {selectedFormId && mergedData.form ? (
         <UnarchivedFormDataView
           form={mergedData.form}
@@ -636,7 +636,7 @@ function UnarchivedFormDataView({ form, rows, assets, user, getCollectionHook, o
 
     if (field.type === 'formula') {
       const displayValue = formatFieldValue(field, currentValue);
-      return (
+                                return (
         <span className="text-blue-700 font-semibold">
           {displayValue || '0'}
         </span>
@@ -718,7 +718,7 @@ function UnarchivedFormDataView({ form, rows, assets, user, getCollectionHook, o
                 ))}
                 <td className="px-3 py-2 sticky right-0 bg-white">
                   <div className="flex items-center gap-2">
-                    <button
+                                            <button
                       onClick={() => handleView(row)}
                       className="p-1 text-blue-600 hover:bg-blue-100 rounded transition-colors"
                       title="查看"
@@ -729,9 +729,9 @@ function UnarchivedFormDataView({ form, rows, assets, user, getCollectionHook, o
                       onClick={() => handleEdit(row)}
                       className="p-1 text-green-600 hover:bg-green-100 rounded transition-colors"
                       title="编辑"
-                    >
-                      <Edit className="w-4 h-4" />
-                    </button>
+                                            >
+                                                <Edit className="w-4 h-4" />
+                                            </button>
                     <button
                       onClick={() => handleDelete(row)}
                       className="p-1 text-red-600 hover:bg-red-100 rounded transition-colors"
@@ -835,15 +835,15 @@ function ViewRowModal({ row, form, activeFields, onClose }) {
                   </div>
                 )}
               </div>
-            </div>
-          );
-        })}
+                                    </div>
+                                );
+                            })}
         <div className="flex justify-end pt-4 border-t">
           <Button variant="outline" onClick={onClose}>
             关闭
           </Button>
-        </div>
-      </div>
+                        </div>
+                    </div>
     </Modal>
   );
 }
@@ -1024,9 +1024,9 @@ function EditRowModal({ row, form, assets, user, getCollectionHook, onSave, onCa
         {error && (
           <div className="p-3 bg-red-100 border border-red-300 text-red-700 rounded-lg text-sm">
             {error}
-          </div>
+            </div>
         )}
-
+        
         <div className="space-y-4 max-h-[60vh] overflow-y-auto">
           {activeFields.map(field => (
             <div key={field.id}>
@@ -1034,7 +1034,7 @@ function EditRowModal({ row, form, assets, user, getCollectionHook, onSave, onCa
                 {field.name}
                 {field.type === 'formula' && (
                   <span className="ml-1 text-xs text-blue-500">(自动计算)</span>
-                )}
+        )}
                 {['number', 'formula'].includes(field.type) && (
                   <span className="ml-1 text-xs text-gray-400">
                     保留 {typeof field.displayPrecision === 'number' ? field.displayPrecision : 2} 位小数
@@ -1056,10 +1056,10 @@ function EditRowModal({ row, form, assets, user, getCollectionHook, onSave, onCa
               <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></div>
             ) : (
               <Check className="w-4 h-4 mr-2" />
-            )}
+        )}
             {isSaving ? '保存中...' : '保存'}
           </Button>
-        </div>
+      </div>
       </form>
     </Modal>
   );

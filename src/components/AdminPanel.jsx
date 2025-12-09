@@ -86,7 +86,7 @@ export default function AdminPanel({ user, getCollectionHook }) {
               </div>
             </div>
           ) : (
-            <ViewAllAssetsPanel user={user} getCollectionHook={getCollectionHook} />
+          <ViewAllAssetsPanel user={user} getCollectionHook={getCollectionHook} />
           )
         )}
 
