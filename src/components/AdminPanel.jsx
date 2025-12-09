@@ -148,7 +148,13 @@ function UnarchivedDocsTreeReadOnly({ tab, forms, assets, user, activeTabId, onF
             // 根据用户角色，后端已经过滤了assets数据
             // 基地负责人：只能看到自己基地的数据
             // 资产管理员/财务管理员：可以看到所有有权限的数据
-            const formAssets = assets.filter(a => a.formId === form.id);
+            // 只计算有数据的资产记录（batchData不为空且长度大于0）
+            const formAssets = assets.filter(a => 
+              a.formId === form.id &&
+              a.batchData && 
+              Array.isArray(a.batchData) && 
+              a.batchData.length > 0
+            );
             const totalRows = formAssets.reduce((sum, asset) => sum + (asset.batchData?.length || 0), 0);
             
             return (

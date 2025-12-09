@@ -125,8 +125,11 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             return { type: 'field', fieldId: token, fieldName: field?.fieldName || token };
                         });
                     }
+                    // 确保 name 字段被正确读取，如果不存在（null/undefined），使用默认值
+                    // 如果 name 是空字符串，保留它（用户可能想要清空名称）
+                    const calcName = (calc.name !== null && calc.name !== undefined) ? calc.name : `计算字段${index + 1}`;
                     return {
-                        name: calc.name || `计算字段${index + 1}`,
+                        name: calcName,
                         expression: calc.expression || '',
                         parts: parts,
                         id: calc.id || `calc_${Date.now()}_${index}`
@@ -836,7 +839,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             <div className="flex items-center space-x-2 mb-3">
                                 <input
                                     type="text"
-                                    value={calc.name}
+                                    value={calc.name || ''}
                                     onChange={(e) => updateCalculation(calc.id, { name: e.target.value })}
                                     placeholder="计算字段名称"
                                     className="w-40 px-2 py-1 border rounded text-sm"

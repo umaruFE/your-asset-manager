@@ -358,7 +358,14 @@ function UnarchivedDocsTree({ tab, forms, assets, user, activeTabId, onFormClick
       {isExpanded && (
         <div className="ml-8 mt-2 space-y-1">
           {unarchivedForms.map(form => {
-            const formAssets = assets.filter(a => a.formId === form.id && a.subAccountId === user.id);
+            // 只计算有数据的资产记录（batchData不为空且长度大于0）
+            const formAssets = assets.filter(a => 
+              a.formId === form.id && 
+              a.subAccountId === user.id &&
+              a.batchData && 
+              Array.isArray(a.batchData) && 
+              a.batchData.length > 0
+            );
             const totalRows = formAssets.reduce((sum, asset) => sum + (asset.batchData?.length || 0), 0);
       
             return (
