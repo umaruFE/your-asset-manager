@@ -3,8 +3,11 @@ import { Plus, Trash2, Save, Play, X, HelpCircle, Info, AlertCircle, CheckCircle
 import { Button, Modal, useModal, InputGroup, LoadingScreen } from '../utils/UI';
 import { reportsAPI } from '../utils/api';
 
+const DEFAULT_ACCESS_ROLES = ['base_manager', 'company_asset', 'company_finance'];
+
 export default function ReportBuilder({ user, getCollectionHook, editingReport, onClose }) {
     const { data: forms, loading: formsLoading } = getCollectionHook('forms');
+    const { data: allUsers } = getCollectionHook('allAppUsers');
     const [reportName, setReportName] = useState('');
     const [reportDescription, setReportDescription] = useState('');
     const [selectedForms, setSelectedForms] = useState([]);
@@ -16,7 +19,42 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     const [executionResult, setExecutionResult] = useState(null);
     const [loadingReport, setLoadingReport] = useState(false);
     const [sortOrders, setSortOrders] = useState([]);
+    const [accessRoles, setAccessRoles] = useState(DEFAULT_ACCESS_ROLES);
+    const [accessUsers, setAccessUsers] = useState([]);
     const saveModal = useModal();
+
+    const normalizeAccessRules = (rules) => {
+        const defaultRules = {
+            roles: DEFAULT_ACCESS_ROLES,
+            users: []
+        };
+
+        if (!rules) return defaultRules;
+
+        let parsed = rules;
+        if (typeof parsed === 'string') {
+            try {
+                parsed = JSON.parse(parsed);
+            } catch (error) {
+                console.warn('[ReportBuilder] Failed to parse accessRules string', error);
+                return defaultRules;
+            }
+        }
+
+        if (typeof parsed !== 'object') return defaultRules;
+
+        const roles = Array.isArray(parsed.roles)
+            ? Array.from(new Set(parsed.roles.filter(r => r && r !== 'base_handler')))
+            : defaultRules.roles;
+        const users = Array.isArray(parsed.users)
+            ? Array.from(new Set(parsed.users.filter(u => !!u)))
+            : [];
+
+        return {
+            roles: roles.length > 0 ? roles : defaultRules.roles,
+            users
+        };
+    };
 
     // 如果是编辑模式，加载报表数据
     useEffect(() => {
@@ -32,6 +70,8 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             setCalculations([]);
             setSortOrders([]);
             setExecutionResult(null);
+            setAccessRoles(DEFAULT_ACCESS_ROLES);
+            setAccessUsers([]);
         }
     }, [editingReport]);
 
@@ -66,6 +106,11 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             if (config.selectedForms && Array.isArray(config.selectedForms)) {
                 setSelectedForms(config.selectedForms);
             }
+
+            // 回填权限
+            const normalizedRules = normalizeAccessRules(reportData.accessRules || reportData.access_rules);
+            setAccessRoles(normalizedRules.roles);
+            setAccessUsers(normalizedRules.users);
 
             // 回填选中的字段
             if (config.selectedFields && Array.isArray(config.selectedFields)) {
@@ -289,6 +334,17 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         };
     }, [selectedForms, selectedFields, aggregations, calculations, sortOrders]);
 
+    const roleOptions = useMemo(() => ([
+        { value: 'base_manager', label: '基地负责人' },
+        { value: 'company_asset', label: '公司资产员' },
+        { value: 'company_finance', label: '公司财务' },
+    ]), []);
+
+    const selectableUsers = useMemo(() => {
+        if (!allUsers) return [];
+        return allUsers.filter(u => u.role !== 'superadmin' && u.role !== 'base_handler');
+    }, [allUsers]);
+
     // 切换表单选择
     const toggleForm = (formId) => {
         setSelectedForms(prev => {
@@ -466,6 +522,13 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         setSortOrders(prev => prev.filter(order => order.id !== id));
     };
 
+    const buildAccessRules = () => {
+        return normalizeAccessRules({
+            roles: accessRoles,
+            users: accessUsers
+        });
+    };
+
     // 保存报表
     const handleSave = async () => {
         if (!reportName.trim()) {
@@ -475,6 +538,11 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
         if (selectedForms.length === 0) {
             alert('请至少选择一个表单');
+            return;
+        }
+
+        if (accessRoles.length === 0 && accessUsers.length === 0) {
+            alert('请至少选择一个允许查看的角色或用户');
             return;
         }
 
@@ -492,20 +560,23 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                     direction
                 }))
             };
+            const accessRules = buildAccessRules();
 
             if (editingReport && editingReport.id) {
                 // 更新现有报表
                 await reportsAPI.update(editingReport.id, {
                     name: reportName,
                     description: reportDescription,
-                    config
+                    config,
+                    accessRules
                 });
             } else {
                 // 创建新报表
                 await reportsAPI.create({
                     name: reportName,
                     description: reportDescription,
-                    config
+                    config,
+                    accessRules
                 });
             }
 
@@ -531,6 +602,11 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             return;
         }
 
+        if (accessRoles.length === 0 && accessUsers.length === 0) {
+            alert('请至少选择一个允许查看的角色或用户');
+            return;
+        }
+
         setIsExecuting(true);
         try {
             const config = {
@@ -545,6 +621,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                     direction
                 }))
             };
+            const accessRules = buildAccessRules();
 
             let reportId;
             // 如果正在编辑报表，使用现有报表ID；否则创建临时报表
@@ -553,7 +630,8 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                 await reportsAPI.update(editingReport.id, {
                     name: reportName || editingReport.name,
                     description: reportDescription || editingReport.description,
-                    config
+                    config,
+                    accessRules
                 });
                 reportId = editingReport.id;
             } else {
@@ -561,7 +639,8 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                 const tempReport = await reportsAPI.create({
                     name: `临时报表_${Date.now()}`,
                     description: '临时执行报表',
-                    config
+                    config,
+                    accessRules
                 });
                 reportId = tempReport.id;
             }
@@ -667,6 +746,75 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                         placeholder="报表说明..."
                     />
                 </InputGroup>
+            </div>
+
+            {/* 查看权限 */}
+            <div className="space-y-3 p-4 border border-gray-200 rounded-lg bg-gray-50">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                        <h3 className="text-lg font-semibold text-gray-700">查看权限</h3>
+                        <span className="text-xs text-gray-500">配置哪些角色/用户可以查看统计报表</span>
+                    </div>
+                    <span className="text-xs text-orange-600">基地经手人不可查看</span>
+                </div>
+                <div className="text-sm text-gray-600 bg-white p-3 rounded border">
+                    <p>至少选择一个角色或用户可查看报表，未勾选的用户将看不到该统计。</p>
+                </div>
+                <div className="space-y-2">
+                    <div className="text-sm font-medium text-gray-700">允许查看的角色</div>
+                    <div className="grid grid-cols-3 gap-2">
+                        {roleOptions.map(role => (
+                            <label key={role.value} className="flex items-center space-x-2 p-2 rounded border bg-white hover:bg-gray-50 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={accessRoles.includes(role.value)}
+                                    onChange={() => {
+                                        setAccessRoles(prev => {
+                                            if (prev.includes(role.value)) {
+                                                return prev.filter(r => r !== role.value);
+                                            }
+                                            return [...prev, role.value];
+                                        });
+                                    }}
+                                    className="w-4 h-4"
+                                />
+                                <span className="text-sm">{role.label}</span>
+                            </label>
+                        ))}
+                    </div>
+                </div>
+                <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                        <div className="text-sm font-medium text-gray-700">额外指定的用户（可选）</div>
+                        <span className="text-xs text-gray-400">不包含超级管理员和基地经手人</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                        {selectableUsers?.map(u => {
+                            const checked = accessUsers.includes(u.id);
+                            return (
+                                <label key={u.id} className="flex items-center space-x-2 p-2 rounded border bg-white hover:bg-gray-50 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() => {
+                                            setAccessUsers(prev => {
+                                                if (checked) {
+                                                    return prev.filter(id => id !== u.id);
+                                                }
+                                                return [...prev, u.id];
+                                            });
+                                        }}
+                                        className="w-4 h-4"
+                                    />
+                                    <span className="text-sm">{u.name || u.username}</span>
+                                </label>
+                            );
+                        })}
+                        {!selectableUsers?.length && (
+                            <div className="text-xs text-gray-400 col-span-2">暂无可选用户</div>
+                        )}
+                    </div>
+                </div>
             </div>
 
             {/* 选择表单 */}

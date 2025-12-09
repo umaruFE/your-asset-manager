@@ -817,7 +817,11 @@ function normalizeAccessRules(rules) {
 
     const normalized = {
         roles: Array.isArray(parsedRules.roles)
-            ? Array.from(new Set(parsedRules.roles.filter(role => typeof role === 'string' && role.trim().length > 0)))
+            ? Array.from(new Set(parsedRules.roles.filter(role =>
+                typeof role === 'string'
+                && role.trim().length > 0
+                && role !== 'base_handler' // 基地经手人无权查看统计报表
+            )))
             : defaultRules.roles,
         users: Array.isArray(parsedRules.users)
             ? Array.from(new Set(parsedRules.users.filter(userId => typeof userId === 'string' && userId.trim().length > 0)))
@@ -834,6 +838,11 @@ function normalizeAccessRules(rules) {
 
 function canAccessReport(report, user) {
     if (!report) return false;
+
+    // 基地经手人无权查看任何统计报表
+    if (user?.role === 'base_handler') {
+        return false;
+    }
     
     // 兼容处理：created_by 可能是下划线命名（数据库原始）或驼峰命名（经过转换）
     const createdBy = report.created_by || report.createdBy;

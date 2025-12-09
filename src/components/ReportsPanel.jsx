@@ -252,6 +252,45 @@ export default function ReportsPanel({ user, getCollectionHook }) {
         }
     };
 
+    const handleExportResult = () => {
+        if (!executionResult) return;
+        const headers = columns;
+        const rows = sortedData || [];
+
+        if (headers.length === 0 || rows.length === 0) {
+            alert('暂无可导出的数据');
+            return;
+        }
+
+        const escapeCell = (value) => {
+            if (value === null || value === undefined) return '""';
+            const str = String(value).replace(/"/g, '""');
+            return `"${str}"`;
+        };
+
+        const lines = [];
+        lines.push(headers.join(','));
+        rows.forEach(row => {
+            const cells = headers.map(key => {
+                const isRemovedGroup = availableGroupKeys.includes(key) && !groupKeys.includes(key);
+                const value = row[key];
+                const displayValue = value ?? (isRemovedGroup ? '全部' : '');
+                return escapeCell(displayValue);
+            });
+            lines.push(cells.join(','));
+        });
+
+        const csvContent = '\ufeff' + lines.join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const dateLabel = new Date().toISOString().split('T')[0];
+        link.href = url;
+        link.download = `${executionResult.report?.name || 'report'}_${dateLabel}.csv`;
+        link.click();
+        window.URL.revokeObjectURL(url);
+    };
+
     if (loading) {
         return <LoadingScreen message="加载报表中..." />;
     }
@@ -491,7 +530,10 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                                 </tbody>
                             </table>
                         </div>
-                        <div className="flex justify-end">
+                        <div className="flex justify-end space-x-3">
+                            <Button variant="outline" onClick={handleExportResult} disabled={!sortedData.length}>
+                                导出结果
+                            </Button>
                             <Button variant="primary" onClick={() => setExecutionResult(null)}>关闭</Button>
                         </div>
                     </div>
