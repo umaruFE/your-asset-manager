@@ -17,6 +17,10 @@ export default function ReportsPanel({ user, getCollectionHook }) {
     const [baseRows, setBaseRows] = useState([]); // 原始返回行
     const [groupKeys, setGroupKeys] = useState([]); // 当前分组字段（显示用）
     const [groupedRows, setGroupedRows] = useState(null); // 重分组后的行
+    const columns = useMemo(() => {
+        if (!executionResult?.data || executionResult.data.length === 0) return [];
+        return Object.keys(executionResult.data[0] || {}).filter(key => !hiddenColumns.includes(key));
+    }, [executionResult, hiddenColumns]);
     const confirmModal = useModal();
     const canManageReports = user.role === 'superadmin';
 
@@ -128,13 +132,14 @@ export default function ReportsPanel({ user, getCollectionHook }) {
     }, [executionResult]);
 
     // 根据分组字段重新聚合（前端汇总）
-    const regroupRows = (rows, visibleGroupKeys, hidden) => {
+    const regroupRows = (rows, visibleGroupKeys, hidden, removedGroupKeys = []) => {
         if (!rows || rows.length === 0) return [];
         if (!visibleGroupKeys || visibleGroupKeys.length === 0) {
             // 无分组，返回单行汇总
             const agg = {};
             Object.keys(rows[0]).forEach(col => {
                 if (hidden.includes(col)) return;
+                if (removedGroupKeys.includes(col)) return;
                 const num = parseFloat(rows[0][col]);
                 if (!isNaN(num)) {
                     agg[col] = rows.reduce((sum, r) => sum + (parseFloat(r[col]) || 0), 0);
@@ -161,6 +166,7 @@ export default function ReportsPanel({ user, getCollectionHook }) {
             const bucket = map.get(key);
             Object.keys(row).forEach(col => {
                 if (hidden.includes(col)) return;
+                if (removedGroupKeys.includes(col)) return; // 去掉已取消的分组列
                 if (visibleGroupKeys.includes(col)) return;
                 const val = parseFloat(row[col]);
                 if (!isNaN(val)) {
@@ -176,6 +182,10 @@ export default function ReportsPanel({ user, getCollectionHook }) {
         const result = Array.from(map.values()).map(r => {
             const copy = { ...r };
             delete copy.__group__;
+            // 对于被取消的分组列，显示为空，避免随机值
+            removedGroupKeys.forEach(col => {
+                copy[col] = undefined;
+            });
             return copy;
         });
         return result;
@@ -185,9 +195,10 @@ export default function ReportsPanel({ user, getCollectionHook }) {
     useEffect(() => {
         if (!baseRows || baseRows.length === 0) return;
         const visibleGroupKeys = groupKeys.filter(k => !hiddenColumns.includes(k));
-        const regrouped = regroupRows(baseRows, visibleGroupKeys, hiddenColumns);
+        const removedGroupKeys = availableGroupKeys.filter(k => !visibleGroupKeys.includes(k));
+        const regrouped = regroupRows(baseRows, visibleGroupKeys, hiddenColumns, removedGroupKeys);
         setGroupedRows(regrouped);
-    }, [baseRows, groupKeys, hiddenColumns]);
+    }, [baseRows, groupKeys, hiddenColumns, availableGroupKeys]);
 
     // 执行报表
     const handleExecute = async (report) => {
@@ -434,7 +445,7 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                                     ))}
                                 </div>
                                 <div className="text-xs text-gray-500">
-                                    取消勾选可去掉对应 group by，按剩余字段或全部汇总。
+                                    取消勾选可去掉对应汇总项，按剩余字段或全部汇总。
                                 </div>
                             </div>
                         )}
@@ -442,38 +453,39 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                             <table className="min-w-full divide-y divide-gray-200">
                                 <thead className="bg-gray-100 sticky top-0">
                                     <tr>
-                                        {Object.keys(sortedData[0] || {})
-                                            .filter(key => !hiddenColumns.includes(key))
-                                            .map(key => (
-                                                <th 
-                                                    key={key} 
-                                                    className="px-4 py-2 text-left text-xs font-medium text-gray-700 cursor-pointer hover:bg-gray-200 select-none"
-                                                    onClick={() => handleSort(key)}
-                                                >
-                                                    <div className="flex items-center space-x-1">
-                                                        <span>{key}</span>
-                                                        {sortConfig.key === key && (
-                                                            sortConfig.direction === 'asc' ? (
-                                                                <ArrowUp className="w-3 h-3" />
-                                                            ) : (
-                                                                <ArrowDown className="w-3 h-3" />
-                                                            )
-                                                        )}
-                                                    </div>
-                                                </th>
-                                            ))}
+                                        {columns.map(key => (
+                                            <th 
+                                                key={key} 
+                                                className="px-4 py-2 text-left text-xs font-medium text-gray-700 cursor-pointer hover:bg-gray-200 select-none"
+                                                onClick={() => handleSort(key)}
+                                            >
+                                                <div className="flex items-center space-x-1">
+                                                    <span>{key}</span>
+                                                    {sortConfig.key === key && (
+                                                        sortConfig.direction === 'asc' ? (
+                                                            <ArrowUp className="w-3 h-3" />
+                                                        ) : (
+                                                            <ArrowDown className="w-3 h-3" />
+                                                        )
+                                                    )}
+                                                </div>
+                                            </th>
+                                        ))}
                                     </tr>
                                 </thead>
                                 <tbody className="bg-white divide-y divide-gray-200">
                                     {sortedData.map((row, idx) => (
                                         <tr key={idx}>
-                                            {Object.keys(executionResult.data[0] || {})
-                                                .filter(key => !hiddenColumns.includes(key))
-                                                .map((key, i) => (
+                                            {columns.map((key, i) => {
+                                                const isRemovedGroup = availableGroupKeys.includes(key) && !groupKeys.includes(key);
+                                                const value = row[key];
+                                                const displayValue = value ?? (isRemovedGroup ? '全部' : '');
+                                                return (
                                                     <td key={i} className="px-4 py-2 text-sm text-gray-900">
-                                                        {row[key]}
+                                                        {displayValue}
                                                     </td>
-                                                ))}
+                                                );
+                                            })}
                                         </tr>
                                     ))}
                                 </tbody>
