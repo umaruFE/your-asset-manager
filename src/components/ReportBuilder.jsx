@@ -124,10 +124,34 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             const field = allFields.find(f => f.fieldId === token);
                             return { type: 'field', fieldId: token, fieldName: field?.fieldName || token };
                         });
+                    } else if (parts.length > 0) {
+                        // 如果parts已存在，需要更新fieldName（可能存储的是字段ID而不是字段名称）
+                        parts = parts.map(part => {
+                            if (part.type === 'field' && part.fieldId) {
+                                // 查找字段名称
+                                const field = allFields.find(f => f.fieldId === part.fieldId);
+                                // 如果fieldName是字段ID（说明存储时出错了），更新为正确的字段名称
+                                if (field && (part.fieldName === part.fieldId || !part.fieldName)) {
+                                    return { ...part, fieldName: field.fieldName };
+                                }
+                            }
+                            return part;
+                        });
                     }
-                    // 确保 name 字段被正确读取，如果不存在（null/undefined），使用默认值
-                    // 如果 name 是空字符串，保留它（用户可能想要清空名称）
-                    const calcName = (calc.name !== null && calc.name !== undefined) ? calc.name : `计算字段${index + 1}`;
+                    // 确保 name 字段被正确读取
+                    // 支持多种可能的字段名格式（name, fieldName, calcName等）
+                    const calcName = calc.name || calc.fieldName || calc.calcName || 
+                                    (calc.name === '' ? '' : `计算字段${index + 1}`);
+                    
+                    console.log('[ReportBuilder] Loading calculation field:', {
+                        index,
+                        originalCalc: calc,
+                        extractedName: calcName,
+                        hasName: !!calc.name,
+                        nameValue: calc.name,
+                        updatedParts: parts
+                    });
+                    
                     return {
                         name: calcName,
                         expression: calc.expression || '',
@@ -853,15 +877,28 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             <div className="mb-3 p-2 bg-white border rounded text-sm font-mono min-h-[2rem] flex items-center">
                                 {calc.parts && calc.parts.length > 0 ? (
                                     <div className="flex flex-wrap items-center gap-1">
-                                        {calc.parts.map((part, idx) => (
-                                            <span key={idx} className="px-2 py-1 rounded bg-blue-100 text-blue-800">
-                                                {part.type === 'field'
-                                                    ? `${part.fieldName || part.fieldId}`
-                                                    : part.type === 'operator'
-                                                        ? part.value
-                                                        : part.value}
-                                            </span>
-                                        ))}
+                                        {calc.parts.map((part, idx) => {
+                                            // 如果是字段类型，尝试从availableFields中查找字段名称
+                                            let displayText = '';
+                                            if (part.type === 'field') {
+                                                // 优先使用part.fieldName，如果不存在或等于fieldId，则从availableFields查找
+                                                if (part.fieldName && part.fieldName !== part.fieldId) {
+                                                    displayText = part.fieldName;
+                                                } else {
+                                                    const field = availableFields.find(f => f.fieldId === part.fieldId);
+                                                    displayText = field?.fieldName || part.fieldId;
+                                                }
+                                            } else if (part.type === 'operator') {
+                                                displayText = part.value;
+                                            } else {
+                                                displayText = part.value;
+                                            }
+                                            return (
+                                                <span key={idx} className="px-2 py-1 rounded bg-blue-100 text-blue-800">
+                                                    {displayText}
+                                                </span>
+                                            );
+                                        })}
                                     </div>
                                 ) : (
                                     <span className="text-gray-400">表达式为空，请添加字段和运算符</span>
