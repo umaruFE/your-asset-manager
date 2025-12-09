@@ -14,6 +14,9 @@ export default function ReportsPanel({ user, getCollectionHook }) {
     const [executionResult, setExecutionResult] = useState(null);
     const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
     const [hiddenColumns, setHiddenColumns] = useState([]); // 根据聚合函数 show 控制显示
+    const [baseRows, setBaseRows] = useState([]); // 原始返回行
+    const [groupKeys, setGroupKeys] = useState([]); // 当前分组字段（显示用）
+    const [groupedRows, setGroupedRows] = useState(null); // 重分组后的行
     const confirmModal = useModal();
     const canManageReports = user.role === 'superadmin';
 
@@ -65,15 +68,17 @@ export default function ReportsPanel({ user, getCollectionHook }) {
     };
 
     // 排序后的数据
+    const currentRows = groupedRows || (executionResult?.data || []);
+
     const sortedData = useMemo(() => {
-        if (!executionResult || !executionResult.data || executionResult.data.length === 0) {
+        if (!currentRows || currentRows.length === 0) {
             return [];
         }
         if (!sortConfig.key) {
-            return executionResult.data;
+            return currentRows;
         }
 
-        const sorted = [...executionResult.data];
+        const sorted = [...currentRows];
         sorted.sort((a, b) => {
             const aVal = a[sortConfig.key];
             const bVal = b[sortConfig.key];
@@ -101,7 +106,7 @@ export default function ReportsPanel({ user, getCollectionHook }) {
         });
 
         return sorted;
-    }, [executionResult, sortConfig]);
+    }, [currentRows, sortConfig]);
 
     const getAggregationSuffix = (func) => {
         const map = {
@@ -114,12 +119,88 @@ export default function ReportsPanel({ user, getCollectionHook }) {
         return map[func?.toUpperCase?.()] || func || '';
     };
 
+    // 可选分组字段（来自“选择字段”）
+    const availableGroupKeys = useMemo(() => {
+        if (!executionResult?.report?.config?.selectedFields) return [];
+        return executionResult.report.config.selectedFields
+            .map(f => f.fieldName || f.fieldId)
+            .filter(Boolean);
+    }, [executionResult]);
+
+    // 根据分组字段重新聚合（前端汇总）
+    const regroupRows = (rows, visibleGroupKeys, hidden) => {
+        if (!rows || rows.length === 0) return [];
+        if (!visibleGroupKeys || visibleGroupKeys.length === 0) {
+            // 无分组，返回单行汇总
+            const agg = {};
+            Object.keys(rows[0]).forEach(col => {
+                if (hidden.includes(col)) return;
+                const num = parseFloat(rows[0][col]);
+                if (!isNaN(num)) {
+                    agg[col] = rows.reduce((sum, r) => sum + (parseFloat(r[col]) || 0), 0);
+                } else {
+                    agg[col] = rows[0][col] ?? '';
+                }
+            });
+            return [agg];
+        }
+
+        const map = new Map();
+        rows.forEach(row => {
+            const keyParts = visibleGroupKeys.map(k => row[k] ?? '');
+            const key = JSON.stringify(keyParts);
+            if (!map.has(key)) {
+                map.set(key, {
+                    __group__: keyParts,
+                    ...visibleGroupKeys.reduce((acc, k, idx) => {
+                        acc[visibleGroupKeys[idx]] = keyParts[idx];
+                        return acc;
+                    }, {}),
+                });
+            }
+            const bucket = map.get(key);
+            Object.keys(row).forEach(col => {
+                if (hidden.includes(col)) return;
+                if (visibleGroupKeys.includes(col)) return;
+                const val = parseFloat(row[col]);
+                if (!isNaN(val)) {
+                    bucket[col] = (bucket[col] || 0) + val;
+                } else {
+                    if (bucket[col] === undefined) {
+                        bucket[col] = row[col];
+                    }
+                }
+            });
+        });
+
+        const result = Array.from(map.values()).map(r => {
+            const copy = { ...r };
+            delete copy.__group__;
+            return copy;
+        });
+        return result;
+    };
+
+    // 当分组或隐藏列变化时重新聚合
+    useEffect(() => {
+        if (!baseRows || baseRows.length === 0) return;
+        const visibleGroupKeys = groupKeys.filter(k => !hiddenColumns.includes(k));
+        const regrouped = regroupRows(baseRows, visibleGroupKeys, hiddenColumns);
+        setGroupedRows(regrouped);
+    }, [baseRows, groupKeys, hiddenColumns]);
+
     // 执行报表
     const handleExecute = async (report) => {
         try {
             setExecutingReport(report.id);
             const result = await reportsAPI.execute(report.id);
             setExecutionResult({ report, ...result });
+            setBaseRows(result?.data || []);
+            const defaultGroups = (report?.config?.selectedFields || [])
+                .map(f => f.fieldName || f.fieldId)
+                .filter(Boolean);
+            setGroupKeys(defaultGroups);
+            setGroupedRows(null);
             setSortConfig({ key: null, direction: 'asc' }); // 重置排序
 
             // 处理隐藏列（基于聚合函数 show=false）
@@ -326,13 +407,42 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                 >
                     <div className="space-y-4">
                         <p className="text-sm text-gray-600">
-                            共 {executionResult.total} 条记录
+                            共 {sortedData.length} 条记录（可调整分组查看汇总）
                         </p>
+                        {availableGroupKeys.length > 0 && (
+                            <div className="p-3 bg-gray-50 border rounded-lg space-y-2">
+                                <div className="text-sm font-medium text-gray-700">分组字段（可取消以做汇总）</div>
+                                <div className="flex flex-wrap gap-3">
+                                    {availableGroupKeys.map(key => (
+                                        <label key={key} className="inline-flex items-center space-x-1 text-sm text-gray-700">
+                                            <input
+                                                type="checkbox"
+                                                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                                checked={groupKeys.includes(key)}
+                                                onChange={(e) => {
+                                                    const checked = e.target.checked;
+                                                    setGroupKeys(prev => {
+                                                        if (checked) {
+                                                            return Array.from(new Set([...prev, key]));
+                                                        }
+                                                        return prev.filter(k => k !== key);
+                                                    });
+                                                }}
+                                            />
+                                            <span>{key}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                    取消勾选可去掉对应 group by，按剩余字段或全部汇总。
+                                </div>
+                            </div>
+                        )}
                         <div className="max-h-96 overflow-auto">
                             <table className="min-w-full divide-y divide-gray-200">
                                 <thead className="bg-gray-100 sticky top-0">
                                     <tr>
-                                        {Object.keys(executionResult.data[0] || {})
+                                        {Object.keys(sortedData[0] || {})
                                             .filter(key => !hiddenColumns.includes(key))
                                             .map(key => (
                                                 <th 
