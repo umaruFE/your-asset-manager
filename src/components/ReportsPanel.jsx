@@ -13,6 +13,7 @@ export default function ReportsPanel({ user, getCollectionHook }) {
     const [executingReport, setExecutingReport] = useState(null);
     const [executionResult, setExecutionResult] = useState(null);
     const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
+    const [hiddenColumns, setHiddenColumns] = useState([]); // 根据聚合函数 show 控制显示
     const confirmModal = useModal();
     const canManageReports = user.role === 'superadmin';
 
@@ -102,6 +103,17 @@ export default function ReportsPanel({ user, getCollectionHook }) {
         return sorted;
     }, [executionResult, sortConfig]);
 
+    const getAggregationSuffix = (func) => {
+        const map = {
+            SUM: '求和',
+            AVG: '平均值',
+            COUNT: '计数',
+            MAX: '最大值',
+            MIN: '最小值'
+        };
+        return map[func?.toUpperCase?.()] || func || '';
+    };
+
     // 执行报表
     const handleExecute = async (report) => {
         try {
@@ -109,6 +121,13 @@ export default function ReportsPanel({ user, getCollectionHook }) {
             const result = await reportsAPI.execute(report.id);
             setExecutionResult({ report, ...result });
             setSortConfig({ key: null, direction: 'asc' }); // 重置排序
+
+            // 处理隐藏列（基于聚合函数 show=false）
+            const aggConfig = report?.config?.aggregations || [];
+            const hidden = aggConfig
+                .filter(a => a?.show === false)
+                .map(a => `${a.fieldName || a.fieldId}_${getAggregationSuffix(a.function || 'SUM')}`);
+            setHiddenColumns(hidden);
         } catch (err) {
             // 尝试解析错误响应
             let errorMessage = err.message || '执行失败';
@@ -313,34 +332,38 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                             <table className="min-w-full divide-y divide-gray-200">
                                 <thead className="bg-gray-100 sticky top-0">
                                     <tr>
-                                        {Object.keys(executionResult.data[0] || {}).map(key => (
-                                            <th 
-                                                key={key} 
-                                                className="px-4 py-2 text-left text-xs font-medium text-gray-700 cursor-pointer hover:bg-gray-200 select-none"
-                                                onClick={() => handleSort(key)}
-                                            >
-                                                <div className="flex items-center space-x-1">
-                                                    <span>{key}</span>
-                                                    {sortConfig.key === key && (
-                                                        sortConfig.direction === 'asc' ? (
-                                                            <ArrowUp className="w-3 h-3" />
-                                                        ) : (
-                                                            <ArrowDown className="w-3 h-3" />
-                                                        )
-                                                    )}
-                                                </div>
-                                            </th>
-                                        ))}
+                                        {Object.keys(executionResult.data[0] || {})
+                                            .filter(key => !hiddenColumns.includes(key))
+                                            .map(key => (
+                                                <th 
+                                                    key={key} 
+                                                    className="px-4 py-2 text-left text-xs font-medium text-gray-700 cursor-pointer hover:bg-gray-200 select-none"
+                                                    onClick={() => handleSort(key)}
+                                                >
+                                                    <div className="flex items-center space-x-1">
+                                                        <span>{key}</span>
+                                                        {sortConfig.key === key && (
+                                                            sortConfig.direction === 'asc' ? (
+                                                                <ArrowUp className="w-3 h-3" />
+                                                            ) : (
+                                                                <ArrowDown className="w-3 h-3" />
+                                                            )
+                                                        )}
+                                                    </div>
+                                                </th>
+                                            ))}
                                     </tr>
                                 </thead>
                                 <tbody className="bg-white divide-y divide-gray-200">
                                     {sortedData.map((row, idx) => (
                                         <tr key={idx}>
-                                            {Object.keys(executionResult.data[0] || {}).map((key, i) => (
-                                                <td key={i} className="px-4 py-2 text-sm text-gray-900">
-                                                    {row[key]}
-                                                </td>
-                                            ))}
+                                            {Object.keys(executionResult.data[0] || {})
+                                                .filter(key => !hiddenColumns.includes(key))
+                                                .map((key, i) => (
+                                                    <td key={i} className="px-4 py-2 text-sm text-gray-900">
+                                                        {row[key]}
+                                                    </td>
+                                                ))}
                                         </tr>
                                     ))}
                                 </tbody>

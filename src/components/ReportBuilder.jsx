@@ -79,6 +79,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                     fieldId: agg.fieldId,
                     fieldName: agg.fieldName,
                     function: agg.function || 'SUM',
+                    show: agg.show !== false, // 默认显示
                     id: agg.id || `agg_${Date.now()}_${index}`
                 }));
                 setAggregations(aggsWithIds);
@@ -331,7 +332,8 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             formId: availableFields[0].formId,
             fieldId: availableFields[0].fieldId,
             fieldName: availableFields[0].fieldName,
-            function: 'SUM' // SUM, AVG, COUNT, MAX, MIN
+            function: 'SUM', // SUM, AVG, COUNT, MAX, MIN
+            show: true
         }]);
     };
 
@@ -815,6 +817,14 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                                     </option>
                                 ))}
                             </select>
+                            <label className="flex items-center text-xs text-gray-600 space-x-1">
+                                <input
+                                    type="checkbox"
+                                    checked={agg.show !== false}
+                                    onChange={(e) => updateAggregation(agg.id, { show: e.target.checked })}
+                                />
+                                <span>显示</span>
+                            </label>
                             <Button size="sm" variant="danger" onClick={() => removeAggregation(agg.id)}>
                                 <Trash2 className="w-4 h-4" />
                             </Button>
