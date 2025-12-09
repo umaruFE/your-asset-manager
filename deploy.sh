@@ -264,7 +264,9 @@ else
     echo ""
     echo -e "${GREEN}已选择: Nginx 反向代理模式${NC}"
     echo ""
-    read -p "域名或 IP 地址 (例如: yourdomain.com 或 123.456.789.0): " DOMAIN
+    # 默认使用固定 IP，回车直接采用默认
+    read -p "域名或 IP 地址 (默认: 123.57.23.174): " DOMAIN
+    DOMAIN=${DOMAIN:-123.57.23.174}
     
     # 判断是否使用 HTTPS（如果域名不是 IP 地址，默认使用 HTTPS）
     USE_HTTPS=false
