@@ -158,17 +158,21 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                         // 简单解析：按空格分割，识别字段ID和运算符
                         const tokens = calc.expression.split(/\s+/);
                         parts = tokens.map(token => {
-                            // 检查是否是运算符
-                            if (['+', '-', '*', '/'].includes(token)) {
+                            // 检查是否是运算符（包括括号）
+                            if (['+', '-', '*', '/', '(', ')'].includes(token)) {
                                 return { type: 'operator', value: token };
                             }
                             // 检查是否是数字
                             if (!isNaN(token) && token !== '') {
                                 return { type: 'number', value: token };
                             }
-                            // 否则是字段ID
+                            // 否则是字段ID，查找对应的字段名
                             const field = allFields.find(f => f.fieldId === token);
-                            return { type: 'field', fieldId: token, fieldName: field?.fieldName || token };
+                            return { 
+                                type: 'field', 
+                                fieldId: token, 
+                                fieldName: field?.fieldName || token 
+                            };
                         });
                     } else if (parts.length > 0) {
                         // 如果parts已存在，需要更新fieldName（可能存储的是字段ID而不是字段名称）
@@ -176,9 +180,11 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             if (part.type === 'field' && part.fieldId) {
                                 // 查找字段名称
                                 const field = allFields.find(f => f.fieldId === part.fieldId);
-                                // 如果fieldName是字段ID（说明存储时出错了），更新为正确的字段名称
-                                if (field && (part.fieldName === part.fieldId || !part.fieldName)) {
-                                    return { ...part, fieldName: field.fieldName };
+                                // 如果fieldName不存在、是字段ID、或者是空字符串，更新为正确的字段名称
+                                if (field) {
+                                    if (!part.fieldName || part.fieldName === part.fieldId || part.fieldName.trim() === '') {
+                                        return { ...part, fieldName: field.fieldName };
+                                    }
                                 }
                             }
                             return part;
@@ -323,6 +329,38 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         setSortOrders(prev => prev.filter(order => availableSortColumns.some(col => col.key === order.field)));
     }, [availableSortColumns]);
 
+    // 当availableFields变化时，更新所有计算字段的fieldName
+    useEffect(() => {
+        if (availableFields.length > 0 && calculations.length > 0) {
+            setCalculations(prev => prev.map(calc => {
+                if (calc.parts && calc.parts.length > 0) {
+                    const updatedParts = calc.parts.map(part => {
+                        if (part.type === 'field' && part.fieldId) {
+                            // 如果fieldName不存在或者是字段ID，尝试从availableFields中查找
+                            if (!part.fieldName || part.fieldName === part.fieldId) {
+                                const field = availableFields.find(f => f.fieldId === part.fieldId);
+                                if (field && field.fieldName) {
+                                    return { ...part, fieldName: field.fieldName };
+                                }
+                            }
+                        }
+                        return part;
+                    });
+                    // 只有当parts有变化时才更新
+                    const hasChanges = updatedParts.some((part, idx) => {
+                        const originalPart = calc.parts[idx];
+                        return part.type === 'field' && originalPart.type === 'field' && 
+                               part.fieldName !== originalPart.fieldName;
+                    });
+                    if (hasChanges) {
+                        return { ...calc, parts: updatedParts };
+                    }
+                }
+                return calc;
+            }));
+        }
+    }, [availableFields]);
+
     // 配置步骤完成状态
     const stepStatus = useMemo(() => {
         return {
@@ -440,6 +478,28 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     };
 
     // 从表达式部分构建表达式字符串（使用字段ID）
+    // 构建表达式（用于显示，使用字段名）
+    const buildExpressionForDisplay = (parts) => {
+        return parts.map(part => {
+            if (part.type === 'field') {
+                // 优先使用字段名
+                let fieldName = part.fieldName;
+                // 如果字段名不存在或者是字段ID，尝试从availableFields中查找
+                if (!fieldName || fieldName === part.fieldId) {
+                    const field = availableFields.find(f => f.fieldId === part.fieldId);
+                    fieldName = field?.fieldName || part.fieldId;
+                }
+                return fieldName;
+            } else if (part.type === 'operator') {
+                return part.value;
+            } else if (part.type === 'number') {
+                return part.value;
+            }
+            return '';
+        }).join(' ');
+    };
+
+    // 构建表达式（用于保存，使用字段ID）
     const buildExpressionFromParts = (parts) => {
         return parts.map(part => {
             if (part.type === 'field') {
@@ -548,11 +608,19 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
         setIsSaving(true);
         try {
+            // 确保所有计算字段的表达式使用字段ID（用于保存）
+            const calculationsForSave = calculations.map(calc => ({
+                ...calc,
+                expression: calc.parts && calc.parts.length > 0 
+                    ? buildExpressionFromParts(calc.parts) 
+                    : calc.expression
+            }));
+
             const config = {
                 selectedForms,
                 selectedFields,
                 aggregations,
-                calculations,
+                calculations: calculationsForSave,
                 filters: {},
                 sortOrders: sortOrders.map(({ field, direction, id }) => ({
                     id,
@@ -609,11 +677,19 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
         setIsExecuting(true);
         try {
+            // 确保所有计算字段的表达式使用字段ID（用于执行）
+            const calculationsForExecute = calculations.map(calc => ({
+                ...calc,
+                expression: calc.parts && calc.parts.length > 0 
+                    ? buildExpressionFromParts(calc.parts) 
+                    : calc.expression
+            }));
+
             const config = {
                 selectedForms,
                 selectedFields,
                 aggregations,
-                calculations,
+                calculations: calculationsForExecute,
                 filters: {},
                 sortOrders: sortOrders.map(({ field, direction, id }) => ({
                     id,
@@ -1144,9 +1220,9 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                                     >
                                         清空表达式
                                     </Button>
-                                    {calc.expression && (
+                                    {calc.parts && calc.parts.length > 0 && (
                                         <span className="text-xs text-gray-500 ml-2">
-                                            表达式: {calc.expression}
+                                            表达式: {buildExpressionForDisplay(calc.parts)}
                                         </span>
                                     )}
                                 </div>
