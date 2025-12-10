@@ -215,6 +215,17 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             }
         }
         
+        // 获取表单名称映射（用于生成唯一的聚合列名）
+        const formNameMap = {};
+        if (selectedForms && selectedForms.length > 0) {
+            for (const formId of selectedForms) {
+                const formResult = await pool.query('SELECT name FROM forms WHERE id = $1', [formId]);
+                if (formResult.rows.length > 0) {
+                    formNameMap[formId] = formResult.rows[0].name;
+                }
+            }
+        }
+        
         // 检查是否有聚合函数（需要在构建字段之前检查）
         const hasAggregations = aggregations && aggregations.length > 0;
         
@@ -337,13 +348,16 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 const func = agg.function.toUpperCase(); // SUM, AVG, COUNT, MAX, MIN
                 const fieldId = agg.fieldId;
                 const fieldName = agg.fieldName || fieldId;
+                const formName = formNameMap[agg.formId] || agg.formId;
                 const suffix = getAggregationSuffix(func);
+                // 使用表单名+字段名确保列名唯一性，避免不同表单的同名字段产生冲突
+                const uniqueColName = `${formName}_${fieldName}_${suffix}`;
                 
                 // 使用 CASE WHEN 确保只聚合该表单的数据
                 if (func === 'COUNT') {
                     // COUNT可以用于任何类型
                     const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') ELSE NULL END)`;
-                    selectClauses.push(`${aggExpression} as "${agg.fieldName}_${suffix}"`);
+                    selectClauses.push(`${aggExpression} as "${uniqueColName}"`);
                 } else {
                     // 其他聚合函数需要数字类型
                     const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
@@ -353,20 +367,23 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     const finalExpression = shouldRoundToInteger 
                         ? `ROUND(COALESCE(${aggExpression}, 0))`
                         : `COALESCE(${aggExpression}, 0)`;
-                    selectClauses.push(`${finalExpression} as "${agg.fieldName}_${suffix}"`);
+                    selectClauses.push(`${finalExpression} as "${uniqueColName}"`);
                 }
             }
         }
 
-        // 创建聚合字段映射：fieldId -> 聚合列名（例如 "转入重量 (kg)_求和"）
+        // 创建聚合字段映射：fieldId -> 聚合列名（例如 "期初投入登记表_转入重量 (kg)_求和"）
+        // 使用表单名+字段名确保列名唯一性，避免不同表单的同名字段产生冲突
         const aggregationColumnMap = {};
         if (hasAggregations && aggregations) {
             for (const agg of aggregations) {
                 if (agg.formId && agg.fieldId && agg.function) {
                     const func = agg.function.toUpperCase();
-                    const fieldName = agg.fieldName || agg.fieldId;
+                    const fieldId = agg.fieldId;
+                    const fieldName = agg.fieldName || fieldId;
+                    const formName = formNameMap[agg.formId] || agg.formId;
                     const suffix = getAggregationSuffix(func);
-                    aggregationColumnMap[agg.fieldId] = `${fieldName}_${suffix}`;
+                    aggregationColumnMap[agg.fieldId] = `${formName}_${fieldName}_${suffix}`;
                 }
             }
         }
@@ -445,13 +462,16 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     const func = agg.function.toUpperCase();
                     const fieldId = agg.fieldId;
                     const fieldName = agg.fieldName || fieldId;
+                    const formName = formNameMap[agg.formId] || agg.formId;
                     const suffix = getAggregationSuffix(func);
+                    // 使用表单名+字段名确保列名唯一性，避免不同表单的同名字段产生冲突
+                    const uniqueColName = `${formName}_${fieldName}_${suffix}`;
                     
                     // 关键修复：对于跨表单聚合，需要确保每个聚合字段只从它所属的表单中聚合数据
                     // 使用 CASE WHEN 确保只聚合该表单的数据，这样即使其他表单没有该字段，也不会影响聚合结果
                     if (func === 'COUNT') {
                         const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') ELSE NULL END)`;
-                        innerSelectClauses.push(`${aggExpression} as "${agg.fieldName}_${suffix}"`);
+                        innerSelectClauses.push(`${aggExpression} as "${uniqueColName}"`);
                     } else {
                         const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
                         // 对于"数量（尾）"这样的字段，SUM结果应该是整数，需要四舍五入
@@ -460,7 +480,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                         const finalExpression = shouldRoundToInteger 
                             ? `ROUND(COALESCE(${aggExpression}, 0))`
                             : `COALESCE(${aggExpression}, 0)`;
-                        innerSelectClauses.push(`${finalExpression} as "${agg.fieldName}_${suffix}"`);
+                        innerSelectClauses.push(`${finalExpression} as "${uniqueColName}"`);
                     }
                 }
             }
@@ -528,9 +548,12 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 for (const agg of aggregations || []) {
                     if (agg.formId && agg.fieldId && agg.function) {
                         const func = agg.function.toUpperCase();
-                        const fieldName = agg.fieldName || agg.fieldId;
+                        const fieldId = agg.fieldId;
+                        const fieldName = agg.fieldName || fieldId;
+                        const formName = formNameMap[agg.formId] || agg.formId;
                         const suffix = getAggregationSuffix(func);
-                        const aggColName = `${fieldName}_${suffix}`;
+                        // 使用表单名+字段名确保列名唯一性
+                        const aggColName = `${formName}_${fieldName}_${suffix}`;
                         const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
                         outerSelectClauses.push(`subq."${escapedColName}"`);
                     }
