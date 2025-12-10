@@ -1112,6 +1112,8 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                                         <option value="-">- (减)</option>
                                         <option value="*">* (乘)</option>
                                         <option value="/">/ (除)</option>
+                                        <option value="(">( (左括号)</option>
+                                        <option value=")">) (右括号)</option>
                                     </select>
                                     <input
                                         type="number"
