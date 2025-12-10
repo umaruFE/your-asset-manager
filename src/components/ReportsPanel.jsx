@@ -215,11 +215,34 @@ export default function ReportsPanel({ user, getCollectionHook }) {
             setSortConfig({ key: null, direction: 'asc' }); // 重置排序
 
             // 处理隐藏列（基于聚合函数 show=false）
+            // 后端聚合列名格式：formName_fieldName_suffix，需匹配实际返回列名
             const aggConfig = report?.config?.aggregations || [];
-            const hidden = aggConfig
+            const hiddenAggs = aggConfig
                 .filter(a => a?.show === false)
-                .map(a => `${a.fieldName || a.fieldId}_${getAggregationSuffix(a.function || 'SUM')}`);
-            setHiddenColumns(hidden);
+                .map(a => ({
+                    fieldName: a.fieldName || a.fieldId,
+                    suffix: getAggregationSuffix(a.function || 'SUM')
+                }));
+
+            const dataKeys = Object.keys((result?.data && result.data[0]) || {});
+            const hiddenSet = new Set();
+
+            hiddenAggs.forEach(agg => {
+                const targetSuffix = `_${agg.suffix}`;
+                dataKeys.forEach(key => {
+                    if (key.endsWith(targetSuffix)) {
+                        // 兼容：前缀可能包含表单名，匹配包含字段名即可
+                        const maybeFieldName = key.slice(0, key.length - targetSuffix.length);
+                        if (maybeFieldName.includes(agg.fieldName)) {
+                            hiddenSet.add(key);
+                        }
+                    }
+                });
+                // 兜底：旧格式（无表单名前缀）
+                hiddenSet.add(`${agg.fieldName}_${agg.suffix}`);
+            });
+
+            setHiddenColumns(Array.from(hiddenSet));
         } catch (err) {
             // 尝试解析错误响应
             let errorMessage = err.message || '执行失败';
