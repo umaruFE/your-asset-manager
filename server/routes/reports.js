@@ -457,8 +457,10 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             }
             
             // 添加所有聚合字段
+            const aggregatedFieldIds = new Set();
             for (const agg of aggregations || []) {
                 if (agg.formId && agg.fieldId && agg.function) {
+                    aggregatedFieldIds.add(agg.fieldId);
                     const func = agg.function.toUpperCase();
                     const fieldId = agg.fieldId;
                     const fieldName = agg.fieldName || fieldId;
@@ -481,6 +483,68 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                             ? `ROUND(COALESCE(${aggExpression}, 0))`
                             : `COALESCE(${aggExpression}, 0)`;
                         innerSelectClauses.push(`${finalExpression} as "${uniqueColName}"`);
+                    }
+                }
+            }
+            
+            // 收集计算字段中引用的所有字段ID
+            const calculationFieldIds = new Set();
+            if (calculations && calculations.length > 0) {
+                for (const calc of calculations) {
+                    if (calc.expression) {
+                        const fieldIdPattern = /(\w+)/g;
+                        let match;
+                        while ((match = fieldIdPattern.exec(calc.expression)) !== null) {
+                            const fieldId = match[1];
+                            // 检查是否是运算符、数字或括号
+                            if (!['+', '-', '*', '/', '(', ')'].includes(fieldId) && isNaN(fieldId)) {
+                                calculationFieldIds.add(fieldId);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 对于计算字段中引用但不在聚合函数中也不在selectedFields中的字段，自动添加聚合
+            const selectedFieldIds = new Set();
+            if (selectedFields && selectedFields.length > 0) {
+                selectedFields.forEach(field => {
+                    if (field && field.fieldId) {
+                        selectedFieldIds.add(field.fieldId);
+                    }
+                });
+            }
+            
+            for (const fieldId of calculationFieldIds) {
+                // 如果这个字段既不在聚合函数中，也不在selectedFields中，需要自动添加
+                if (!aggregatedFieldIds.has(fieldId) && !selectedFieldIds.has(fieldId)) {
+                    // 查找这个字段（字段ID是全局唯一的）
+                    const fieldResult = await pool.query(
+                        'SELECT id, name, type, form_id FROM form_fields WHERE id = $1 AND active = true',
+                        [fieldId]
+                    );
+                    
+                    if (fieldResult.rows.length > 0) {
+                        const field = fieldResult.rows[0];
+                        const foundFormId = field.form_id;
+                        const foundFieldName = field.name;
+                        
+                        // 检查这个字段所属的表单是否在选中的表单列表中
+                        if (selectedForms && selectedForms.includes(foundFormId)) {
+                            // 自动添加AVG聚合（因为通常用于计算的平均值）
+                            const formName = formNameMap[foundFormId] || foundFormId;
+                            const suffix = getAggregationSuffix('AVG');
+                            const uniqueColName = `${formName}_${foundFieldName}_${suffix}`;
+                            const aggExpression = `AVG(CASE WHEN assets.form_id = '${foundFormId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${foundFieldName}') AS NUMERIC) ELSE NULL END)`;
+                            innerSelectClauses.push(`COALESCE(${aggExpression}, 0) as "${uniqueColName}"`);
+                            // 更新aggregationColumnMap
+                            aggregationColumnMap[fieldId] = uniqueColName;
+                            console.log(`[Report Execute] Auto-added aggregation for field ${fieldId} (${foundFieldName}) from form ${foundFormId}`);
+                        } else {
+                            console.warn(`[Report Execute] Field ${fieldId} (${foundFieldName}) belongs to form ${foundFormId} which is not in selected forms`);
+                        }
+                    } else {
+                        console.warn(`[Report Execute] Field ${fieldId} not found in database`);
                     }
                 }
             }
