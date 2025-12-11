@@ -19,7 +19,35 @@ export default function ReportsPanel({ user, getCollectionHook }) {
     const [groupedRows, setGroupedRows] = useState(null); // 重分组后的行
     const columns = useMemo(() => {
         if (!executionResult?.data || executionResult.data.length === 0) return [];
-        return Object.keys(executionResult.data[0] || {}).filter(key => !hiddenColumns.includes(key));
+        const allKeys = Object.keys(executionResult.data[0] || {}).filter(key => !hiddenColumns.includes(key));
+        
+        // 按照报表配置中的 selectedFields 顺序排列
+        const reportConfig = executionResult?.report?.config;
+        if (reportConfig?.selectedFields && Array.isArray(reportConfig.selectedFields)) {
+            const sortedFields = [...reportConfig.selectedFields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+            const orderedKeys = [];
+            const remainingKeys = new Set(allKeys);
+            
+            // 先添加已选字段（按顺序）
+            sortedFields.forEach(field => {
+                const fieldName = field.fieldName || field.fieldId;
+                if (remainingKeys.has(fieldName)) {
+                    orderedKeys.push(fieldName);
+                    remainingKeys.delete(fieldName);
+                }
+            });
+            
+            // 再添加其他字段（聚合字段、计算字段等）
+            allKeys.forEach(key => {
+                if (remainingKeys.has(key)) {
+                    orderedKeys.push(key);
+                }
+            });
+            
+            return orderedKeys;
+        }
+        
+        return allKeys;
     }, [executionResult, hiddenColumns]);
     const confirmModal = useModal();
     const canManageReports = user.role === 'superadmin';
@@ -277,10 +305,10 @@ export default function ReportsPanel({ user, getCollectionHook }) {
 
     const handleExportResult = () => {
         if (!executionResult) return;
-        const headers = columns;
+        const headers = ['序号', ...columns];
         const rows = sortedData || [];
 
-        if (headers.length === 0 || rows.length === 0) {
+        if (columns.length === 0 || rows.length === 0) {
             alert('暂无可导出的数据');
             return;
         }
@@ -291,12 +319,94 @@ export default function ReportsPanel({ user, getCollectionHook }) {
             return `"${str}"`;
         };
 
+        // 获取字段格式配置
+        const getFieldFormat = (fieldName) => {
+            const reportConfig = executionResult?.report?.config;
+            
+            // 1. 检查 selectedFields（普通字段）
+            if (reportConfig?.selectedFields && Array.isArray(reportConfig.selectedFields)) {
+                const field = reportConfig.selectedFields.find(
+                    f => (f.fieldName || f.fieldId) === fieldName
+                );
+                if (field?.decimalPlaces !== undefined) {
+                    return field.decimalPlaces;
+                }
+            }
+            
+            // 2. 检查 aggregations（格式：表单名_字段名_后缀）
+            if (reportConfig?.aggregations && Array.isArray(reportConfig.aggregations)) {
+                const getSuffix = (func) => {
+                    const funcUpper = func?.toUpperCase();
+                    const suffixMap = {
+                        'SUM': '求和',
+                        'AVG': '平均值',
+                        'COUNT': '计数',
+                        'MAX': '最大值',
+                        'MIN': '最小值'
+                    };
+                    return suffixMap[funcUpper] || funcUpper || '';
+                };
+                
+                // 尝试匹配聚合字段（列名格式：表单名_字段名_后缀）
+                for (const agg of reportConfig.aggregations) {
+                    const aggFieldName = agg.fieldName || agg.fieldId;
+                    const suffix = getSuffix(agg.function || 'SUM');
+                    
+                    // 检查列名是否匹配聚合字段格式
+                    if (fieldName.includes(aggFieldName) && fieldName.endsWith(`_${suffix}`)) {
+                        if (agg.decimalPlaces !== undefined) {
+                            return agg.decimalPlaces;
+                        }
+                    }
+                }
+            }
+            
+            // 3. 检查 calculations（计算字段）
+            if (reportConfig?.calculations && Array.isArray(reportConfig.calculations)) {
+                const calc = reportConfig.calculations.find(
+                    c => c.name === fieldName
+                );
+                if (calc?.decimalPlaces !== undefined) {
+                    return calc.decimalPlaces;
+                }
+            }
+            
+            return undefined;
+        };
+
         const lines = [];
-        lines.push(headers.join(','));
-        rows.forEach(row => {
-            const cells = headers.map(key => {
-                const isRemovedGroup = availableGroupKeys.includes(key) && !groupKeys.includes(key);
-                const value = row[key];
+        lines.push(headers.map(h => escapeCell(h)).join(','));
+        rows.forEach((row, idx) => {
+            const cells = ['序号', ...columns].map((key, i) => {
+                if (i === 0) {
+                    return escapeCell(idx + 1);
+                }
+                const actualKey = columns[i - 1];
+                const isRemovedGroup = availableGroupKeys.includes(actualKey) && !groupKeys.includes(actualKey);
+                let value = row[actualKey];
+                
+                                                // 应用数字格式
+                                                if (value != null && value !== '' && !isRemovedGroup) {
+                                                    // 尝试将值转换为数字（处理字符串类型的数字，包括科学计数法）
+                                                    let numValue = null;
+                                                    if (typeof value === 'number') {
+                                                        numValue = value;
+                                                    } else if (typeof value === 'string') {
+                                                        // 尝试解析字符串为数字（包括处理带很多小数位的字符串）
+                                                        const trimmed = value.trim();
+                                                        // 检查是否是数字字符串（包括负数、小数、科学计数法）
+                                                        if (trimmed !== '' && /^-?\d*\.?\d+([eE][+-]?\d+)?$/.test(trimmed)) {
+                                                            numValue = parseFloat(trimmed);
+                                                        }
+                                                    }
+                                                    
+                                                    if (numValue !== null && !isNaN(numValue) && isFinite(numValue)) {
+                                                        const decimalPlaces = getFieldFormat(actualKey);
+                                                        // 如果设置了格式，使用设置的格式；否则使用默认2位小数
+                                                        const places = decimalPlaces !== undefined ? decimalPlaces : 2;
+                                                        value = numValue.toFixed(places);
+                                                    }
+                                                }
                 const displayValue = value ?? (isRemovedGroup ? '全部' : '');
                 return escapeCell(displayValue);
             });
@@ -515,6 +625,10 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                             <table className="min-w-full divide-y divide-gray-200">
                                 <thead className="bg-gray-100 sticky top-0">
                                     <tr>
+                                        {/* 序号列 */}
+                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 bg-gray-100">
+                                            序号
+                                        </th>
                                         {columns.map(key => (
                                             <th 
                                                 key={key} 
@@ -536,20 +650,110 @@ export default function ReportsPanel({ user, getCollectionHook }) {
                                     </tr>
                                 </thead>
                                 <tbody className="bg-white divide-y divide-gray-200">
-                                    {sortedData.map((row, idx) => (
-                                        <tr key={idx}>
-                                            {columns.map((key, i) => {
-                                                const isRemovedGroup = availableGroupKeys.includes(key) && !groupKeys.includes(key);
-                                                const value = row[key];
-                                                const displayValue = value ?? (isRemovedGroup ? '全部' : '');
-                                                return (
-                                                    <td key={i} className="px-4 py-2 text-sm text-gray-900">
-                                                        {displayValue}
-                                                    </td>
+                                    {sortedData.map((row, idx) => {
+                                        // 获取字段格式配置
+                                        const getFieldFormat = (fieldName) => {
+                                            const reportConfig = executionResult?.report?.config;
+                                            
+                                            // 1. 检查 selectedFields（普通字段）
+                                            if (reportConfig?.selectedFields && Array.isArray(reportConfig.selectedFields)) {
+                                                const field = reportConfig.selectedFields.find(
+                                                    f => (f.fieldName || f.fieldId) === fieldName
                                                 );
-                                            })}
-                                        </tr>
-                                    ))}
+                                                if (field?.decimalPlaces !== undefined) {
+                                                    return field.decimalPlaces;
+                                                }
+                                            }
+                                            
+                                            // 2. 检查 aggregations（格式：表单名_字段名_后缀）
+                                            if (reportConfig?.aggregations && Array.isArray(reportConfig.aggregations)) {
+                                                const getSuffix = (func) => {
+                                                    const funcUpper = func?.toUpperCase();
+                                                    const suffixMap = {
+                                                        'SUM': '求和',
+                                                        'AVG': '平均值',
+                                                        'COUNT': '计数',
+                                                        'MAX': '最大值',
+                                                        'MIN': '最小值'
+                                                    };
+                                                    return suffixMap[funcUpper] || funcUpper || '';
+                                                };
+                                                
+                                                // 尝试匹配聚合字段（列名格式：表单名_字段名_后缀）
+                                                for (const agg of reportConfig.aggregations) {
+                                                    const aggFieldName = agg.fieldName || agg.fieldId;
+                                                    const suffix = getSuffix(agg.function || 'SUM');
+                                                    
+                                                    // 检查列名是否匹配聚合字段格式
+                                                    // 列名可能是：表单名_字段名_后缀 或 字段名_后缀
+                                                    const expectedSuffix = `_${suffix}`;
+                                                    if (fieldName.endsWith(expectedSuffix)) {
+                                                        // 检查字段名是否包含在列名中
+                                                        if (fieldName.includes(aggFieldName)) {
+                                                            if (agg.decimalPlaces !== undefined) {
+                                                                return agg.decimalPlaces;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            
+                                            // 3. 检查 calculations（计算字段）
+                                            if (reportConfig?.calculations && Array.isArray(reportConfig.calculations)) {
+                                                const calc = reportConfig.calculations.find(
+                                                    c => c.name === fieldName
+                                                );
+                                                if (calc?.decimalPlaces !== undefined) {
+                                                    return calc.decimalPlaces;
+                                                }
+                                            }
+                                            
+                                            return undefined;
+                                        };
+
+                                        return (
+                                            <tr key={idx}>
+                                                {/* 序号列 */}
+                                                <td className="px-4 py-2 text-sm text-gray-900 bg-gray-50 font-medium">
+                                                    {idx + 1}
+                                                </td>
+                                                {columns.map((key, i) => {
+                                                    const isRemovedGroup = availableGroupKeys.includes(key) && !groupKeys.includes(key);
+                                                    let value = row[key];
+                                                    
+                                                    // 应用数字格式
+                                                    if (value != null && value !== '' && !isRemovedGroup) {
+                                                        // 尝试将值转换为数字（处理字符串类型的数字，包括科学计数法）
+                                                        let numValue = null;
+                                                        if (typeof value === 'number') {
+                                                            numValue = value;
+                                                        } else if (typeof value === 'string') {
+                                                            // 尝试解析字符串为数字（包括处理带很多小数位的字符串）
+                                                            const trimmed = value.trim();
+                                                            // 检查是否是数字字符串（包括负数、小数、科学计数法）
+                                                            if (trimmed !== '' && /^-?\d*\.?\d+([eE][+-]?\d+)?$/.test(trimmed)) {
+                                                                numValue = parseFloat(trimmed);
+                                                            }
+                                                        }
+                                                        
+                                                        if (numValue !== null && !isNaN(numValue) && isFinite(numValue)) {
+                                                            const decimalPlaces = getFieldFormat(key);
+                                                            // 如果设置了格式，使用设置的格式；否则使用默认2位小数
+                                                            const places = decimalPlaces !== undefined ? decimalPlaces : 2;
+                                                            value = numValue.toFixed(places);
+                                                        }
+                                                    }
+                                                    
+                                                    const displayValue = value ?? (isRemovedGroup ? '全部' : '');
+                                                    return (
+                                                        <td key={i} className="px-4 py-2 text-sm text-gray-900">
+                                                            {displayValue}
+                                                        </td>
+                                                    );
+                                                })}
+                                            </tr>
+                                        );
+                                    })}
                                 </tbody>
                             </table>
                         </div>

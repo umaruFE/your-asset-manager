@@ -361,12 +361,18 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 } else {
                     // 其他聚合函数需要数字类型
                     const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
+                    // 应用数字格式（如果设置了 decimalPlaces）
+                    const decimalPlaces = agg.decimalPlaces !== undefined ? parseInt(agg.decimalPlaces) : 2;
                     // 对于"数量（尾）"这样的字段，SUM结果应该是整数，需要四舍五入
                     // 检查字段名称是否包含"数量"或"尾"，如果是SUM函数，则四舍五入为整数
                     const shouldRoundToInteger = func === 'SUM' && (fieldName.includes('数量') || fieldName.includes('尾'));
-                    const finalExpression = shouldRoundToInteger 
-                        ? `ROUND(COALESCE(${aggExpression}, 0))`
-                        : `COALESCE(${aggExpression}, 0)`;
+                    let finalExpression;
+                    if (shouldRoundToInteger) {
+                        finalExpression = `ROUND(COALESCE(${aggExpression}, 0))`;
+                    } else {
+                        // 应用设置的小数位数
+                        finalExpression = `ROUND(COALESCE(${aggExpression}, 0)::numeric, ${decimalPlaces})`;
+                    }
                     selectClauses.push(`${finalExpression} as "${uniqueColName}"`);
                 }
             }
@@ -413,7 +419,10 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                             return `CAST(COALESCE(batch_data->0->>'${match}', batch_data->0->>'${fieldName}') AS NUMERIC)`;
                         }
                     });
-                    selectClauses.push(`(${expr}) as "${calc.name}"`);
+                    // 应用数字格式（如果设置了 decimalPlaces）
+                    const decimalPlaces = calc.decimalPlaces !== undefined ? parseInt(calc.decimalPlaces) : 2;
+                    const formattedExpr = `ROUND((${expr})::numeric, ${decimalPlaces})`;
+                    selectClauses.push(`${formattedExpr} as "${calc.name}"`);
                 }
             }
         }
@@ -476,12 +485,18 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                         innerSelectClauses.push(`${aggExpression} as "${uniqueColName}"`);
                     } else {
                         const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
+                        // 应用数字格式（如果设置了 decimalPlaces）
+                        const decimalPlaces = agg.decimalPlaces !== undefined ? parseInt(agg.decimalPlaces) : 2;
                         // 对于"数量（尾）"这样的字段，SUM结果应该是整数，需要四舍五入
                         // 检查字段名称是否包含"数量"或"尾"，如果是SUM函数，则四舍五入为整数
                         const shouldRoundToInteger = func === 'SUM' && (fieldName.includes('数量') || fieldName.includes('尾'));
-                        const finalExpression = shouldRoundToInteger 
-                            ? `ROUND(COALESCE(${aggExpression}, 0))`
-                            : `COALESCE(${aggExpression}, 0)`;
+                        let finalExpression;
+                        if (shouldRoundToInteger) {
+                            finalExpression = `ROUND(COALESCE(${aggExpression}, 0))`;
+                        } else {
+                            // 应用设置的小数位数
+                            finalExpression = `ROUND(COALESCE(${aggExpression}, 0)::numeric, ${decimalPlaces})`;
+                        }
                         innerSelectClauses.push(`${finalExpression} as "${uniqueColName}"`);
                     }
                 }
@@ -536,7 +551,10 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                             const suffix = getAggregationSuffix('AVG');
                             const uniqueColName = `${formName}_${foundFieldName}_${suffix}`;
                             const aggExpression = `AVG(CASE WHEN assets.form_id = '${foundFormId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${foundFieldName}') AS NUMERIC) ELSE NULL END)`;
-                            innerSelectClauses.push(`COALESCE(${aggExpression}, 0) as "${uniqueColName}"`);
+                            // 自动添加的聚合字段使用默认2位小数
+                            const decimalPlaces = 2;
+                            const finalExpression = `ROUND(COALESCE(${aggExpression}, 0)::numeric, ${decimalPlaces})`;
+                            innerSelectClauses.push(`${finalExpression} as "${uniqueColName}"`);
                             // 更新aggregationColumnMap
                             aggregationColumnMap[fieldId] = uniqueColName;
                             console.log(`[Report Execute] Auto-added aggregation for field ${fieldId} (${foundFieldName}) from form ${foundFormId}`);
@@ -646,7 +664,10 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                             return `COALESCE(subq."${escapedFieldName}", 0)`;
                         });
                         const escapedCalcName = calc.name.replace(/"/g, '""'); // 转义双引号
-                        outerSelectClauses.push(`(${expr}) as "${escapedCalcName}"`);
+                        // 应用数字格式（如果设置了 decimalPlaces）
+                        const decimalPlaces = calc.decimalPlaces !== undefined ? parseInt(calc.decimalPlaces) : 2;
+                        const formattedExpr = `ROUND((${expr})::numeric, ${decimalPlaces})`;
+                        outerSelectClauses.push(`${formattedExpr} as "${escapedCalcName}"`);
                     }
                 }
                 
@@ -961,12 +982,20 @@ export { router as reportsRoutes };
 
 function applySortOrders(rows = [], sortOrders = []) {
     if (!Array.isArray(sortOrders) || sortOrders.length === 0) {
+        console.log('[applySortOrders] No sort orders provided');
         return rows;
     }
     const validOrders = sortOrders.filter(order => order && order.field);
     if (validOrders.length === 0) {
+        console.log('[applySortOrders] No valid sort orders');
         return rows;
     }
+    
+    console.log('[applySortOrders] Applying sort orders:', validOrders);
+    if (rows.length > 0) {
+        console.log('[applySortOrders] Sample row keys:', Object.keys(rows[0]));
+    }
+    
     const sortedRows = [...rows];
     sortedRows.sort((a, b) => {
         for (const order of validOrders) {

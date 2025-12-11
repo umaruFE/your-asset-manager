@@ -19,7 +19,11 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     const [executionResult, setExecutionResult] = useState(null);
     const [loadingReport, setLoadingReport] = useState(false);
     const [sortOrders, setSortOrders] = useState([]);
+    const [pendingSortOrders, setPendingSortOrders] = useState(null); // 临时保存待加载的排序设置
     const [accessRoles, setAccessRoles] = useState(DEFAULT_ACCESS_ROLES);
+    // For drag and drop
+    const [draggedFieldId, setDraggedFieldId] = useState(null);
+    const [dragOverFieldId, setDragOverFieldId] = useState(null);
     const [accessUsers, setAccessUsers] = useState([]);
     const saveModal = useModal();
 
@@ -112,9 +116,17 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             setAccessRoles(normalizedRules.roles);
             setAccessUsers(normalizedRules.users);
 
-            // 回填选中的字段
+            // 回填选中的字段（确保有 order 字段和 decimalPlaces 字段）
             if (config.selectedFields && Array.isArray(config.selectedFields)) {
-                setSelectedFields(config.selectedFields);
+                const fieldsWithOrder = config.selectedFields.map((field, idx) => ({
+                    ...field,
+                    order: field.order !== undefined ? field.order : idx,
+                    // 如果字段是数字类型但没有设置 decimalPlaces，设置默认值2
+                    decimalPlaces: field.decimalPlaces !== undefined 
+                        ? field.decimalPlaces 
+                        : (field.fieldType === 'number' || field.fieldType === 'formula' ? 2 : undefined)
+                })).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+                setSelectedFields(fieldsWithOrder);
             }
 
             // 回填聚合函数（确保每个都有 id）
@@ -125,6 +137,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                     fieldName: agg.fieldName,
                     function: agg.function || 'SUM',
                     show: agg.show !== false, // 默认显示
+                    decimalPlaces: agg.decimalPlaces !== undefined ? agg.decimalPlaces : 2, // 加载小数位数设置，默认2位
                     id: agg.id || `agg_${Date.now()}_${index}`
                 }));
                 setAggregations(aggsWithIds);
@@ -208,20 +221,25 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                         name: calcName,
                         expression: calc.expression || '',
                         parts: parts,
+                        decimalPlaces: calc.decimalPlaces !== undefined ? calc.decimalPlaces : 2, // 加载小数位数设置，默认2位
                         id: calc.id || `calc_${Date.now()}_${index}`
                     };
                 });
                 setCalculations(calcsWithIds);
             }
 
+            // 保存排序设置到临时状态，等待 availableSortColumns 准备好后再设置
             if (config.sortOrders && Array.isArray(config.sortOrders)) {
                 const normalizedSorts = config.sortOrders.map((order, index) => ({
                     id: order.id || `sort_${Date.now()}_${index}`,
                     field: order.field || '',
                     direction: order.direction || 'asc'
                 }));
-                setSortOrders(normalizedSorts);
+                
+                console.log('[ReportBuilder] Loading sort orders (pending):', normalizedSorts);
+                setPendingSortOrders(normalizedSorts);
             } else {
+                setPendingSortOrders(null);
                 setSortOrders([]);
             }
         } catch (error) {
@@ -281,11 +299,24 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         return columns;
     }, [selectedFields, aggregations, calculations]);
 
+    // 获取聚合函数后缀的中文映射
+    const getAggregationSuffix = (func) => {
+        const funcUpper = func?.toUpperCase();
+        const suffixMap = {
+            'SUM': '求和',
+            'AVG': '平均值',
+            'COUNT': '计数',
+            'MAX': '最大值',
+            'MIN': '最小值'
+        };
+        return suffixMap[funcUpper] || funcUpper || '';
+    };
+
     // 获取所有可排序的列（包括未选中的字段）
     const availableSortColumns = useMemo(() => {
         const columns = [];
 
-        // 1. 所有可用字段
+        // 1. 所有可用字段（用于分组的字段）
         availableFields.forEach(field => {
             columns.push({
                 key: field.fieldName || field.fieldId,
@@ -293,11 +324,17 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             });
         });
 
-        // 2. 所有聚合函数
+        // 2. 所有聚合函数（使用与后端一致的格式：表单名_字段名_后缀）
         aggregations.forEach(agg => {
-            const label = `${agg.fieldName || agg.fieldId || '字段'}_${agg.function || 'SUM'}`;
+            const form = forms.find(f => f.id === agg.formId);
+            const formName = form?.name || '';
+            const fieldName = agg.fieldName || agg.fieldId || '字段';
+            const suffix = getAggregationSuffix(agg.function || 'SUM');
+            // 使用与后端一致的格式
+            const key = `${formName}_${fieldName}_${suffix}`;
+            const label = `${formName}.${fieldName} (${suffix})`;
             columns.push({
-                key: label,
+                key,
                 label
             });
         });
@@ -323,11 +360,145 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         });
 
         return uniqueColumns;
-    }, [availableFields, aggregations, calculations]);
+    }, [availableFields, aggregations, calculations, forms]);
 
     useEffect(() => {
-        setSortOrders(prev => prev.filter(order => availableSortColumns.some(col => col.key === order.field)));
-    }, [availableSortColumns]);
+        // 如果有待加载的排序设置，且 availableSortColumns 已准备好，则恢复排序设置
+        if (pendingSortOrders && availableSortColumns.length > 0 && forms.length > 0) {
+            console.log('[ReportBuilder] Restoring pending sort orders:', {
+                pendingSortOrders,
+                availableColumns: availableSortColumns.map(col => col.key),
+                formsCount: forms.length
+            });
+            
+            const matchedSorts = pendingSortOrders.map(order => {
+                if (!order.field) return null;
+                
+                // 1. 直接匹配
+                const exactMatch = availableSortColumns.find(col => col.key === order.field);
+                if (exactMatch) {
+                    return order;
+                }
+                
+                // 2. 尝试匹配旧格式（字段名_后缀）转换为新格式（表单名_字段名_后缀）
+                const oldFormatMatch = aggregations.find(agg => {
+                    const fieldName = agg.fieldName || agg.fieldId;
+                    const suffix = getAggregationSuffix(agg.function || 'SUM');
+                    const oldKey = `${fieldName}_${suffix}`;
+                    return oldKey === order.field;
+                });
+                
+                if (oldFormatMatch) {
+                    const form = forms.find(f => f.id === oldFormatMatch.formId);
+                    const formName = form?.name || '';
+                    const fieldName = oldFormatMatch.fieldName || oldFormatMatch.fieldId;
+                    const suffix = getAggregationSuffix(oldFormatMatch.function || 'SUM');
+                    const newKey = `${formName}_${fieldName}_${suffix}`;
+                    
+                    const newFormatMatch = availableSortColumns.find(col => col.key === newKey);
+                    if (newFormatMatch) {
+                        console.log('[ReportBuilder] Converting sort field from old format to new:', {
+                            old: order.field,
+                            new: newKey
+                        });
+                        return { ...order, field: newKey };
+                    }
+                }
+                
+                // 3. 如果匹配不到，返回 null（将被过滤掉）
+                console.warn('[ReportBuilder] Sort field not found in available columns:', order.field);
+                return null;
+            }).filter(order => order !== null);
+            
+            console.log('[ReportBuilder] Matched sort orders:', matchedSorts);
+            setSortOrders(matchedSorts);
+            setPendingSortOrders(null); // 清除待加载状态
+            return;
+        }
+        
+        // 当 availableSortColumns 准备好后，匹配和转换排序设置
+        // 如果 availableSortColumns 为空，但 selectedForms 有值，说明数据还在加载中，不进行过滤
+        if (availableSortColumns.length === 0) {
+            // 如果 selectedForms 有值但 availableSortColumns 为空，说明 forms 数据可能还在加载
+            // 此时不应该过滤排序设置，等待数据准备好
+            if (selectedForms.length > 0) {
+                console.log('[ReportBuilder] Forms data may still be loading, skipping sort order matching');
+                return;
+            }
+            // 如果 selectedForms 也为空，说明确实没有数据，可以清空排序设置
+            return;
+        }
+        
+        setSortOrders(prev => {
+            if (prev.length === 0) {
+                console.log('[ReportBuilder] No sort orders to match');
+                return prev;
+            }
+            
+            console.log('[ReportBuilder] Matching sort orders:', {
+                prevSortOrders: prev,
+                availableColumns: availableSortColumns.map(col => col.key),
+                selectedFormsCount: selectedForms.length,
+                formsCount: forms.length
+            });
+            
+            const updated = prev.map(order => {
+                if (!order.field) return order;
+                
+                // 1. 直接匹配
+                const exactMatch = availableSortColumns.find(col => col.key === order.field);
+                if (exactMatch) {
+                    console.log('[ReportBuilder] Exact match found for sort field:', order.field);
+                    return order;
+                }
+                
+                // 2. 尝试匹配旧格式（字段名_后缀）转换为新格式（表单名_字段名_后缀）
+                // 例如：从 "数量（尾）_求和" 转换为 "期初投入登记表_数量（尾）_求和"
+                const oldFormatMatch = aggregations.find(agg => {
+                    const fieldName = agg.fieldName || agg.fieldId;
+                    const suffix = getAggregationSuffix(agg.function || 'SUM');
+                    const oldKey = `${fieldName}_${suffix}`;
+                    return oldKey === order.field;
+                });
+                
+                if (oldFormatMatch) {
+                    const form = forms.find(f => f.id === oldFormatMatch.formId);
+                    const formName = form?.name || '';
+                    const fieldName = oldFormatMatch.fieldName || oldFormatMatch.fieldId;
+                    const suffix = getAggregationSuffix(oldFormatMatch.function || 'SUM');
+                    const newKey = `${formName}_${fieldName}_${suffix}`;
+                    
+                    // 检查新格式的key是否存在
+                    const newFormatMatch = availableSortColumns.find(col => col.key === newKey);
+                    if (newFormatMatch) {
+                        console.log('[ReportBuilder] Converting sort field from old format to new:', {
+                            old: order.field,
+                            new: newKey
+                        });
+                        return { ...order, field: newKey };
+                    }
+                }
+                
+                // 3. 如果都匹配不到，保持原值（可能在后续加载时能匹配到）
+                console.log('[ReportBuilder] No match found for sort field:', order.field);
+                return order;
+            });
+            
+            // 只过滤掉确实无法匹配的排序设置（字段为空且无法转换）
+            const filtered = updated.filter(order => {
+                if (!order.field) return false;
+                // 检查是否能匹配到
+                const canMatch = availableSortColumns.some(col => col.key === order.field);
+                if (!canMatch) {
+                    console.log('[ReportBuilder] Filtering out unmatched sort field:', order.field);
+                }
+                return canMatch;
+            });
+            
+            console.log('[ReportBuilder] Final sort orders after matching:', filtered);
+            return filtered;
+        });
+    }, [availableSortColumns, aggregations, forms, selectedForms, pendingSortOrders]);
 
     // 当availableFields变化时，更新所有计算字段的fieldName
     useEffect(() => {
@@ -408,11 +579,82 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         setSelectedFields(prev => {
             const exists = prev.find(f => f.formId === field.formId && f.fieldId === field.fieldId);
             if (exists) {
-                return prev.filter(f => !(f.formId === field.formId && f.fieldId === field.fieldId));
+                return prev.filter(f => !(f.formId === field.formId && f.fieldId === field.fieldId))
+                    .map((f, idx) => ({ ...f, order: idx })); // 重新排序
             } else {
-                return [...prev, field];
+                const maxOrder = prev.length > 0 ? Math.max(...prev.map(f => f.order ?? 0)) : -1;
+                return [...prev, { 
+                    ...field, 
+                    order: maxOrder + 1,
+                    decimalPlaces: field.fieldType === 'number' || field.fieldType === 'formula' ? 2 : undefined
+                }];
             }
         });
+    };
+
+    // 更新字段的数字格式
+    const updateFieldDecimalPlaces = (formId, fieldId, decimalPlaces) => {
+        setSelectedFields(prev => prev.map(f => 
+            f.formId === formId && f.fieldId === fieldId 
+                ? { ...f, decimalPlaces: decimalPlaces !== '' ? parseInt(decimalPlaces) || undefined : undefined }
+                : f
+        ));
+    };
+
+    // 更新字段顺序
+    const updateFieldOrder = (fromIndex, toIndex) => {
+        setSelectedFields(prev => {
+            const sortedFields = [...prev].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+            const [moved] = sortedFields.splice(fromIndex, 1);
+            sortedFields.splice(toIndex, 0, moved);
+            return sortedFields.map((f, idx) => ({ ...f, order: idx }));
+        });
+    };
+
+    // Drag and drop handlers for selected fields
+    const handleFieldDragStart = (e, fieldKey) => {
+        setDraggedFieldId(fieldKey);
+        e.dataTransfer.effectAllowed = 'move';
+    };
+
+    const handleFieldDragOver = (e, fieldKey) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (draggedFieldId && draggedFieldId !== fieldKey) {
+            setDragOverFieldId(fieldKey);
+        }
+    };
+
+    const handleFieldDragLeave = () => {
+        setDragOverFieldId(null);
+    };
+
+    const handleFieldDrop = (e, targetFieldKey) => {
+        e.preventDefault();
+        if (!draggedFieldId || draggedFieldId === targetFieldKey) {
+            setDraggedFieldId(null);
+            setDragOverFieldId(null);
+            return;
+        }
+
+        const sortedFields = [...selectedFields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        const draggedIndex = sortedFields.findIndex(f => `${f.formId}_${f.fieldId}` === draggedFieldId);
+        const targetIndex = sortedFields.findIndex(f => `${f.formId}_${f.fieldId}` === targetFieldKey);
+
+        if (draggedIndex === -1 || targetIndex === -1) {
+            setDraggedFieldId(null);
+            setDragOverFieldId(null);
+            return;
+        }
+
+        updateFieldOrder(draggedIndex, targetIndex);
+        setDraggedFieldId(null);
+        setDragOverFieldId(null);
+    };
+
+    const handleFieldDragEnd = () => {
+        setDraggedFieldId(null);
+        setDragOverFieldId(null);
     };
 
     // 添加聚合函数
@@ -427,7 +669,8 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             fieldId: availableFields[0].fieldId,
             fieldName: availableFields[0].fieldName,
             function: 'SUM', // SUM, AVG, COUNT, MAX, MIN
-            show: true
+            show: true,
+            decimalPlaces: 2 // 默认2位小数
         }]);
     };
 
@@ -435,6 +678,24 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     const updateAggregation = (id, updates) => {
         setAggregations(prev => prev.map(agg =>
             agg.id === id ? { ...agg, ...updates } : agg
+        ));
+    };
+
+    // 更新聚合函数的数字格式
+    const updateAggregationDecimalPlaces = (id, decimalPlaces) => {
+        setAggregations(prev => prev.map(agg =>
+            agg.id === id 
+                ? { ...agg, decimalPlaces: decimalPlaces !== '' ? parseInt(decimalPlaces) || undefined : undefined }
+                : agg
+        ));
+    };
+
+    // 更新计算字段的数字格式
+    const updateCalculationDecimalPlaces = (id, decimalPlaces) => {
+        setCalculations(prev => prev.map(calc =>
+            calc.id === id 
+                ? { ...calc, decimalPlaces: decimalPlaces !== '' ? parseInt(decimalPlaces) || undefined : undefined }
+                : calc
         ));
     };
 
@@ -449,7 +710,8 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
             id: Date.now().toString(),
             name: `计算字段${prev.length + 1}`,
             expression: '',
-            parts: [] // 存储表达式部分：[{type: 'field', fieldId: 'xxx'}, {type: 'operator', value: '+'}, ...]
+            parts: [], // 存储表达式部分：[{type: 'field', fieldId: 'xxx'}, {type: 'operator', value: '+'}, ...]
+            decimalPlaces: 2 // 默认2位小数
         }]);
     };
 
@@ -952,6 +1214,70 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             </div>
                         </div>
                     </div>
+                    {/* 已选字段列表（支持拖动排序和数字格式设置） */}
+                    {selectedFields.length > 0 && (
+                        <div className="mb-4 space-y-2">
+                            <div className="text-sm font-medium text-gray-700">已选字段（可拖动排序）：</div>
+                            <div className="space-y-2">
+                                {[...selectedFields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map((field, idx) => {
+                                    const fieldKey = `${field.formId}_${field.fieldId}`;
+                                    const isNumeric = field.fieldType === 'number' || field.fieldType === 'formula';
+                                    return (
+                                        <div
+                                            key={fieldKey}
+                                            draggable
+                                            onDragStart={(e) => handleFieldDragStart(e, fieldKey)}
+                                            onDragOver={(e) => handleFieldDragOver(e, fieldKey)}
+                                            onDragLeave={handleFieldDragLeave}
+                                            onDrop={(e) => handleFieldDrop(e, fieldKey)}
+                                            onDragEnd={handleFieldDragEnd}
+                                            className={`flex items-center space-x-3 p-3 bg-white border rounded-lg cursor-move ${
+                                                draggedFieldId === fieldKey ? 'opacity-50' : ''
+                                            } ${
+                                                dragOverFieldId === fieldKey ? 'bg-blue-50 border-2 border-blue-300' : ''
+                                            }`}
+                                        >
+                                            <div className="flex-shrink-0 text-gray-400">
+                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                                                </svg>
+                                            </div>
+                                            <div className="flex-1">
+                                                <div className="flex items-center space-x-2">
+                                                    <span className="text-sm font-medium text-gray-700">
+                                                        {idx + 1}. {field.fieldName}
+                                                    </span>
+                                                    <span className="text-xs text-gray-400">({field.formName})</span>
+                                                </div>
+                                            </div>
+                                            {isNumeric && (
+                                                <div className="flex items-center space-x-2">
+                                                    <label className="text-xs text-gray-600">小数位数:</label>
+                                                    <input
+                                                        type="number"
+                                                        min="0"
+                                                        max="10"
+                                                        value={field.decimalPlaces ?? ''}
+                                                        onChange={(e) => updateFieldDecimalPlaces(field.formId, field.fieldId, e.target.value)}
+                                                        className="w-16 px-2 py-1 text-sm border rounded"
+                                                        placeholder="2"
+                                                    />
+                                                </div>
+                                            )}
+                                            <button
+                                                onClick={() => toggleField(field)}
+                                                className="text-red-500 hover:text-red-700"
+                                                title="移除字段"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                    {/* 可用字段选择列表 */}
                     <div className="grid grid-cols-3 gap-2 max-h-48 overflow-y-auto">
                         {availableFields.map(field => (
                             <label key={`${field.formId}_${field.fieldId}`} className="flex items-center space-x-2 p-2 border rounded cursor-pointer hover:bg-gray-50">
@@ -1007,53 +1333,70 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                     </Button>
                 </div>
                 <div className="space-y-2">
-                    {aggregations.map(agg => (
-                        <div key={agg.id} className="flex items-center space-x-2 p-3 bg-gray-50 rounded-lg">
-                            <select
-                                value={agg.function}
-                                onChange={(e) => updateAggregation(agg.id, { function: e.target.value })}
-                                className="px-2 py-1 border rounded text-sm"
-                            >
-                                <option value="SUM">求和 (SUM)</option>
-                                <option value="AVG">平均值 (AVG)</option>
-                                <option value="COUNT">计数 (COUNT)</option>
-                                <option value="MAX">最大值 (MAX)</option>
-                                <option value="MIN">最小值 (MIN)</option>
-                            </select>
-                            <select
-                                value={`${agg.formId}_${agg.fieldId}`}
-                                onChange={(e) => {
-                                    const [formId, fieldId] = e.target.value.split('_');
-                                    const field = availableFields.find(f => f.formId === formId && f.fieldId === fieldId);
-                                    if (field) {
-                                        updateAggregation(agg.id, {
-                                            formId: field.formId,
-                                            fieldId: field.fieldId,
-                                            fieldName: field.fieldName
-                                        });
-                                    }
-                                }}
-                                className="flex-grow px-2 py-1 border rounded text-sm"
-                            >
-                                {availableFields.map(field => (
-                                    <option key={`${field.formId}_${field.fieldId}`} value={`${field.formId}_${field.fieldId}`}>
-                                        {field.formName}.{field.fieldName}
-                                    </option>
-                                ))}
-                            </select>
-                            <label className="flex items-center text-xs text-gray-600 space-x-1">
-                                <input
-                                    type="checkbox"
-                                    checked={agg.show !== false}
-                                    onChange={(e) => updateAggregation(agg.id, { show: e.target.checked })}
-                                />
-                                <span>显示</span>
-                            </label>
-                            <Button size="sm" variant="danger" onClick={() => removeAggregation(agg.id)}>
-                                <Trash2 className="w-4 h-4" />
-                            </Button>
-                        </div>
-                    ))}
+                    {aggregations.map(agg => {
+                        const isNumericFunction = ['SUM', 'AVG', 'MAX', 'MIN'].includes(agg.function);
+                        return (
+                            <div key={agg.id} className="flex items-center space-x-2 p-3 bg-gray-50 rounded-lg">
+                                <select
+                                    value={agg.function}
+                                    onChange={(e) => updateAggregation(agg.id, { function: e.target.value })}
+                                    className="px-2 py-1 border rounded text-sm"
+                                >
+                                    <option value="SUM">求和 (SUM)</option>
+                                    <option value="AVG">平均值 (AVG)</option>
+                                    <option value="COUNT">计数 (COUNT)</option>
+                                    <option value="MAX">最大值 (MAX)</option>
+                                    <option value="MIN">最小值 (MIN)</option>
+                                </select>
+                                <select
+                                    value={`${agg.formId}_${agg.fieldId}`}
+                                    onChange={(e) => {
+                                        const [formId, fieldId] = e.target.value.split('_');
+                                        const field = availableFields.find(f => f.formId === formId && f.fieldId === fieldId);
+                                        if (field) {
+                                            updateAggregation(agg.id, {
+                                                formId: field.formId,
+                                                fieldId: field.fieldId,
+                                                fieldName: field.fieldName
+                                            });
+                                        }
+                                    }}
+                                    className="flex-grow px-2 py-1 border rounded text-sm"
+                                >
+                                    {availableFields.map(field => (
+                                        <option key={`${field.formId}_${field.fieldId}`} value={`${field.formId}_${field.fieldId}`}>
+                                            {field.formName}.{field.fieldName}
+                                        </option>
+                                    ))}
+                                </select>
+                                {isNumericFunction && (
+                                    <div className="flex items-center space-x-1">
+                                        <label className="text-xs text-gray-600 whitespace-nowrap">小数位:</label>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max="10"
+                                            value={agg.decimalPlaces ?? ''}
+                                            onChange={(e) => updateAggregationDecimalPlaces(agg.id, e.target.value)}
+                                            className="w-16 px-2 py-1 text-sm border rounded"
+                                            placeholder="2"
+                                        />
+                                    </div>
+                                )}
+                                <label className="flex items-center text-xs text-gray-600 space-x-1">
+                                    <input
+                                        type="checkbox"
+                                        checked={agg.show !== false}
+                                        onChange={(e) => updateAggregation(agg.id, { show: e.target.checked })}
+                                    />
+                                    <span>显示</span>
+                                </label>
+                                <Button size="sm" variant="danger" onClick={() => removeAggregation(agg.id)}>
+                                    <Trash2 className="w-4 h-4" />
+                                </Button>
+                            </div>
+                        );
+                    })}
                 </div>
             </div>
 
@@ -1102,6 +1445,18 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                                     placeholder="计算字段名称"
                                     className="w-40 px-2 py-1 border rounded text-sm"
                                 />
+                                <div className="flex items-center space-x-1">
+                                    <label className="text-xs text-gray-600 whitespace-nowrap">小数位:</label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        max="10"
+                                        value={calc.decimalPlaces ?? ''}
+                                        onChange={(e) => updateCalculationDecimalPlaces(calc.id, e.target.value)}
+                                        className="w-16 px-2 py-1 text-sm border rounded"
+                                        placeholder="2"
+                                    />
+                                </div>
                                 <Button size="sm" variant="danger" onClick={() => removeCalculation(calc.id)}>
                                     <Trash2 className="w-4 h-4" />
                                 </Button>
