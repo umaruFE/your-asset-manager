@@ -191,7 +191,86 @@ export function Tabs({ tabs, activeTab, onTabChange, className = '' }) {
   );
 }
 
-// 9. Icons export
+// 9. Toast Notification
+const ToastContext = React.createContext();
+
+export function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([]);
+
+  const showToast = (message, type = 'info', duration = 3000) => {
+    const id = Date.now() + Math.random();
+    const toast = { id, message, type };
+    setToasts(prev => [...prev, toast]);
+    
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, duration);
+  };
+
+  return (
+    <ToastContext.Provider value={{ showToast }}>
+      {children}
+      <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 space-y-2">
+        {toasts.map(toast => (
+          <div
+            key={toast.id}
+            className={`px-4 py-3 rounded-lg shadow-lg flex items-center space-x-2 min-w-[300px] max-w-[500px] animate-slide-down ${
+              toast.type === 'error' 
+                ? 'bg-red-100 border border-red-300 text-red-700' 
+                : toast.type === 'success'
+                ? 'bg-green-100 border border-green-300 text-green-700'
+                : 'bg-blue-100 border border-blue-300 text-blue-700'
+            }`}
+          >
+            {toast.type === 'error' && <AlertTriangle className="w-5 h-5 flex-shrink-0" />}
+            {toast.type === 'success' && <Check className="w-5 h-5 flex-shrink-0" />}
+            <span className="flex-1">{toast.message}</span>
+            <button
+              onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+              className="text-gray-500 hover:text-gray-700"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <style>{`
+        @keyframes slide-down {
+          from {
+            opacity: 0;
+            transform: translateY(-100%);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .animate-slide-down {
+          animation: slide-down 0.3s ease-out;
+        }
+      `}</style>
+    </ToastContext.Provider>
+  );
+}
+
+export function useToast() {
+  const context = React.useContext(ToastContext);
+  if (!context) {
+    // 如果没有ToastProvider，使用简单的alert作为fallback
+    return {
+      showToast: (message, type) => {
+        if (type === 'error') {
+          alert(message);
+        } else {
+          console.log(`[${type}]`, message);
+        }
+      }
+    };
+  }
+  return context;
+}
+
+// 10. Icons export
 export { 
   User, 
   Lock, 

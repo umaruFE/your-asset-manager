@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 // 导入拆分出来的组件
 import LoginScreen from './components/LoginScreen';
 import Dashboard from './components/Dashboard';
-import { LoadingScreen } from './utils/UI';
+import { LoadingScreen, ToastProvider } from './utils/UI';
 import { useAPI } from './hooks/useAPI';
 
 // --- Main App Component ---
@@ -60,11 +60,13 @@ function App() {
 
     // Show dashboard for logged in user
     return (
-        <Dashboard 
-            user={currentUser} 
-            onLogout={handleLogout} 
-            getCollectionHook={getCollectionHook}
-        />
+        <ToastProvider>
+            <Dashboard 
+                user={currentUser} 
+                onLogout={handleLogout} 
+                getCollectionHook={getCollectionHook}
+            />
+        </ToastProvider>
     );
 }
 

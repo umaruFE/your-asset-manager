@@ -295,6 +295,201 @@ router.post('/:formId/fields', authenticateToken, requireRole('superadmin'), asy
     }
 });
 
+// 更新字段顺序（批量）- 必须在更新单个字段路由之前，否则 "order" 会被当作 fieldId
+router.put('/:formId/fields/order', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
+    console.log('[Update Field Order] ====== START ======');
+    console.log('[Update Field Order] Request received:', {
+        method: req.method,
+        url: req.url,
+        formId: req.params.formId,
+        body: req.body,
+        user: req.user?.id
+    });
+    
+    try {
+        const { fieldOrders } = req.body; // [{ fieldId, order }, ...]
+        const formId = req.params.formId;
+
+        console.log('[Update Field Order] Request:', { formId, fieldOrdersCount: fieldOrders?.length });
+
+        if (!Array.isArray(fieldOrders)) {
+            return res.status(400).json({ error: 'fieldOrders must be an array' });
+        }
+
+        if (fieldOrders.length === 0) {
+            return res.status(400).json({ error: 'fieldOrders array is empty' });
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            // 验证表单是否存在
+            const formCheck = await client.query('SELECT id FROM forms WHERE id = $1', [formId]);
+            if (formCheck.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ 
+                    error: 'Form not found',
+                    message: `表单 ${formId} 不存在`
+                });
+            }
+
+            // 验证所有字段是否存在
+            // 统一处理字段ID：trim并过滤空值
+            const fieldIds = fieldOrders
+                .map(fo => fo.fieldId ? String(fo.fieldId).trim() : null)
+                .filter(Boolean);
+            
+            if (fieldIds.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ 
+                    error: 'Invalid field IDs',
+                    message: '所有字段ID都无效'
+                });
+            }
+
+            if (fieldIds.length !== fieldOrders.length) {
+                console.warn('[Update Field Order] Some field IDs are empty:', {
+                    total: fieldOrders.length,
+                    valid: fieldIds.length
+                });
+            }
+
+            console.log('[Update Field Order] Checking fields:', { formId, fieldIds, fieldIdsCount: fieldIds.length });
+
+            // 检查所有字段（包括已删除的字段，因为我们需要更新它们的顺序）
+            let checkResult;
+            try {
+                checkResult = await client.query(
+                    'SELECT id, name, active FROM form_fields WHERE id = ANY($1::text[]) AND form_id = $2',
+                    [fieldIds, formId]
+                );
+            } catch (queryError) {
+                await client.query('ROLLBACK');
+                console.error('[Update Field Order] Query error:', queryError);
+                return res.status(500).json({ 
+                    error: 'Database query failed',
+                    message: `查询字段时出错: ${queryError.message}`,
+                    details: queryError
+                });
+            }
+
+            // 统一处理：使用trim后的ID进行比较
+            const existingFieldIds = new Set(checkResult.rows.map(r => String(r.id).trim()));
+            const missingFieldIds = fieldIds.filter(id => !existingFieldIds.has(id));
+            
+            // 获取表单中的所有字段（用于调试）
+            const allFormFields = await client.query(
+                'SELECT id, name, active, "order" FROM form_fields WHERE form_id = $1 ORDER BY "order" ASC',
+                [formId]
+            );
+
+            console.log('[Update Field Order] Field check result:', {
+                requested: fieldIds.length,
+                found: existingFieldIds.size,
+                missing: missingFieldIds.length,
+                missingIds: missingFieldIds,
+                foundFields: checkResult.rows.map(r => ({ id: r.id, name: r.name, active: r.active })),
+                allFormFields: allFormFields.rows.map(r => ({ id: r.id, name: r.name, active: r.active, order: r.order }))
+            });
+
+            if (missingFieldIds.length > 0) {
+                await client.query('ROLLBACK');
+                const errorMsg = `以下字段不存在或不属于此表单: ${missingFieldIds.join(', ')}`;
+                console.error('[Update Field Order] Missing fields:', errorMsg);
+                return res.status(404).json({ 
+                    error: 'Field not found',
+                    message: errorMsg,
+                    missingFieldIds: missingFieldIds
+                });
+            }
+
+            // 更新字段顺序
+            const updateResults = [];
+            for (const { fieldId, order } of fieldOrders) {
+                if (!fieldId || order === undefined || order === null) {
+                    console.warn('[Update Field Order] Skipping invalid field order:', { fieldId, order });
+                    continue;
+                }
+
+                // 确保fieldId是字符串并trim（与验证时保持一致）
+                const fieldIdStr = String(fieldId).trim();
+                if (!fieldIdStr) {
+                    console.warn('[Update Field Order] Empty fieldId, skipping:', { fieldId, order });
+                    continue;
+                }
+
+                // 确保fieldId在已验证的字段列表中（使用trim后的ID进行比较）
+                if (!existingFieldIds.has(fieldIdStr)) {
+                    console.error('[Update Field Order] Field not in verified list:', { 
+                        fieldId: fieldIdStr,
+                        existingFieldIds: Array.from(existingFieldIds),
+                        requestedFieldIds: fieldIds
+                    });
+                    await client.query('ROLLBACK');
+                    return res.status(404).json({ 
+                        error: 'Field not found',
+                        message: `字段 ${fieldIdStr} 未通过验证或不属于此表单`,
+                        fieldId: fieldIdStr,
+                        existingFieldIds: Array.from(existingFieldIds).slice(0, 5) // 只返回前5个作为示例
+                    });
+                }
+
+                console.log('[Update Field Order] Updating field:', { fieldId: fieldIdStr, order, formId });
+
+                let updateResult;
+                try {
+                    updateResult = await client.query(
+                        'UPDATE form_fields SET "order" = $1 WHERE id = $2 AND form_id = $3',
+                        [order, fieldIdStr, formId]
+                    );
+                } catch (updateError) {
+                    await client.query('ROLLBACK');
+                    console.error('[Update Field Order] Update query error:', updateError);
+                    return res.status(500).json({ 
+                        error: 'Update failed',
+                        message: `更新字段 ${fieldIdStr} 时出错: ${updateError.message}`,
+                        fieldId: fieldIdStr
+                    });
+                }
+                
+                console.log('[Update Field Order] Update result:', { 
+                    fieldId: fieldIdStr, 
+                    rowCount: updateResult.rowCount 
+                });
+
+                if (updateResult.rowCount === 0) {
+                    console.error('[Update Field Order] Field update returned 0 rows:', { fieldId: fieldIdStr });
+                    await client.query('ROLLBACK');
+                    return res.status(404).json({ 
+                        error: 'Field not found',
+                        message: `字段 ${fieldIdStr} 不存在或不属于此表单`,
+                        fieldId: fieldIdStr
+                    });
+                }
+
+                updateResults.push({ fieldId: fieldIdStr, order, updated: true });
+            }
+
+            await client.query('COMMIT');
+            console.log('[Update Field Order] Success:', { formId, updatedCount: updateResults.length });
+            res.json({ 
+                message: 'Field order updated successfully',
+                updatedCount: updateResults.length
+            });
+        } catch (error) {
+            await client.query('ROLLBACK');
+            console.error('[Update Field Order] Error:', error);
+            throw error;
+        } finally {
+            client.release();
+        }
+    } catch (error) {
+        console.error('[Update Field Order] Outer catch:', error);
+        next(error);
+    }
+});
+
 // 更新字段
 router.put('/:formId/fields/:fieldId', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {
@@ -385,39 +580,6 @@ router.put('/:formId/fields/:fieldId', authenticateToken, requireRole('superadmi
 
         // 转换字段名从下划线到驼峰
         res.json(toCamelCaseObject(result.rows[0]));
-    } catch (error) {
-        next(error);
-    }
-});
-
-// 更新字段顺序（批量）
-router.put('/:formId/fields/order', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
-    try {
-        const { fieldOrders } = req.body; // [{ fieldId, order }, ...]
-
-        if (!Array.isArray(fieldOrders)) {
-            return res.status(400).json({ error: 'fieldOrders must be an array' });
-        }
-
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-
-            for (const { fieldId, order } of fieldOrders) {
-                await client.query(
-                    'UPDATE form_fields SET "order" = $1 WHERE id = $2 AND form_id = $3',
-                    [order, fieldId, req.params.formId]
-                );
-            }
-
-            await client.query('COMMIT');
-            res.json({ message: 'Field order updated successfully' });
-        } catch (error) {
-            await client.query('ROLLBACK');
-            throw error;
-        } finally {
-            client.release();
-        }
     } catch (error) {
         next(error);
     }

@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { Settings, Users, BarChart3, Plus, Trash2, ChevronDown, Loader, ArrowUp, ArrowDown, GripVertical, ShieldCheck } from 'lucide-react';
-import { Button, Modal, useModal, InputGroup, Dropdown, LoadingScreen } from '../utils/UI';
+import { Button, Modal, useModal, InputGroup, Dropdown, LoadingScreen, useToast } from '../utils/UI';
 import { generateId } from '../utils/helpers';
 import { formsAPI, permissionsAPI } from '../utils/api';
 import UserManagementPanel from './UserManagementPanel';
@@ -427,7 +427,7 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                     const formDetails = await formsAPI.getById(initialForm.id);
                     // 更新表单列表中的这个表单
                     const updatedForms = await formsAPI.getAll();
-                    updateForms(() => updatedForms);
+                    updateForms(updatedForms);
                 } catch (err) {
                     console.error('获取表单详情失败:', err);
                 } finally {
@@ -447,6 +447,7 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
     const [updatingFieldId, setUpdatingFieldId] = useState(null); // 正在更新的字段ID
     const confirmModal = useModal();
     const [fieldEditor, setFieldEditor] = useState(null);
+    const { showToast } = useToast();
 
     // For drag and drop
     const [draggedFieldId, setDraggedFieldId] = useState(null);
@@ -595,7 +596,7 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
         setDragOverFieldId(null);
     };
 
-    const handleDrop = (e, targetFieldId) => {
+    const handleDrop = async (e, targetFieldId) => {
         e.preventDefault();
 
         if (!draggedFieldId || draggedFieldId === targetFieldId) {
@@ -624,9 +625,52 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
             f.order = idx;
         });
 
+        // Update local state first for immediate UI feedback
         updateFormFields(sortedFields);
         setDraggedFieldId(null);
         setDragOverFieldId(null);
+
+        // Save field order to backend
+        try {
+            // 验证所有字段ID是否有效
+            const validFields = sortedFields.filter(f => f.id);
+            if (validFields.length !== sortedFields.length) {
+                throw new Error('部分字段ID无效');
+            }
+
+            const fieldOrders = validFields.map((f, idx) => ({
+                fieldId: f.id,
+                order: idx
+            }));
+            
+            await formsAPI.updateFieldOrder(form.id, fieldOrders);
+            
+            // Reload forms to ensure sync with backend
+            const updatedForms = await formsAPI.getAll();
+            updateForms(updatedForms);
+            
+            // Show success message
+            showToast('字段顺序已保存', 'success');
+            
+            // The form will be automatically updated from the updated forms list
+            // No need to manually update it since form is derived from forms (line 419)
+        } catch (err) {
+            console.error('保存字段顺序失败:', err);
+            // 尝试从错误响应中获取更详细的错误信息
+            let errorMessage = err.message || '未知错误';
+            if (err.response?.data || err.data) {
+                const errorData = err.response?.data || err.data;
+                if (errorData.message) {
+                    errorMessage = errorData.message;
+                } else if (errorData.error) {
+                    errorMessage = errorData.error;
+                }
+            }
+            showToast(`保存字段顺序失败: ${errorMessage}`, 'error');
+            // Revert to original order on error
+            const originalFields = form.fields.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+            updateFormFields(originalFields);
+        }
     };
 
     const handleDragEnd = () => {
