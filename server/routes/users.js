@@ -125,6 +125,38 @@ router.get('/me', authenticateToken, async (req, res, next) => {
     }
 });
 
+// 修改当前用户密码
+router.post('/change-password', authenticateToken, async (req, res, next) => {
+    try {
+        const { oldPassword, newPassword } = req.body;
+        if (!oldPassword || !newPassword) {
+            return res.status(400).json({ error: '旧密码和新密码均不能为空' });
+        }
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: '新密码长度不能少于6位' });
+        }
+
+        const userResult = await pool.query('SELECT id, password FROM users WHERE id = $1', [req.user.id]);
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: '用户不存在' });
+        }
+
+        const bcrypt = await import('bcryptjs');
+        const user = userResult.rows[0];
+        const isMatch = await bcrypt.default.compare(oldPassword, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ error: '旧密码不正确' });
+        }
+
+        const hashed = await bcrypt.default.hash(newPassword, 10);
+        await pool.query('UPDATE users SET password = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [hashed, req.user.id]);
+
+        res.json({ success: true, message: '密码修改成功' });
+    } catch (error) {
+        next(error);
+    }
+});
+
 // 创建用户（仅超级管理员）
 router.post('/', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
     try {

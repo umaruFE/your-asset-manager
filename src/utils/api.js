@@ -118,6 +118,13 @@ export const usersAPI = {
         return await apiRequest('/users');
     },
 
+    changePassword: async (oldPassword, newPassword) => {
+        return await apiRequest('/users/change-password', {
+            method: 'POST',
+            body: JSON.stringify({ oldPassword, newPassword }),
+        });
+    },
+
     getMe: async () => {
         return await apiRequest('/users/me');
     },
