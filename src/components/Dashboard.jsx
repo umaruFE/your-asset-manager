@@ -78,9 +78,9 @@ export default function Dashboard({ user, onLogout, getCollectionHook }) {
           </div>
           <div className="flex items-center space-x-4">
             <div className="text-right">
-              <span className="font-semibold text-gray-700">{getDisplayName()}</span>
+              <span className="font-semibold text-gray-700">{displayRole}</span>
               <span className="text-sm text-gray-500 block">
-                {displayRole}
+                {user?.name || user?.username || ''}
               </span>
             </div>
             <Button variant="outline" onClick={() => setShowPwdModal(true)} size="sm">
