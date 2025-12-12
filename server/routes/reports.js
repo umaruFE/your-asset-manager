@@ -5,6 +5,16 @@ import { generateId, toCamelCaseObject } from '../utils/helpers.js';
 
 const router = express.Router();
 
+// 确保行级备注列存在
+const ensureRowNotesColumn = async () => {
+    try {
+        await pool.query('ALTER TABLE reports ADD COLUMN IF NOT EXISTS row_notes JSONB');
+    } catch (err) {
+        console.error('Failed to ensure row_notes column:', err);
+    }
+};
+ensureRowNotesColumn();
+
 // 获取所有报表（超级管理员可以查看全部，其余按照共享范围过滤）
 router.get('/', authenticateToken, async (req, res, next) => {
     try {
@@ -79,6 +89,10 @@ router.put('/:id', authenticateToken, requireRole('superadmin'), async (req, res
             return res.status(404).json({ error: 'Report not found' });
         }
 
+        if (checkResult.rows[0].archive_status === 'archived') {
+            return res.status(400).json({ error: '报表已归档，需取消归档后才能编辑' });
+        }
+
         const updateFields = [];
         const updateValues = [];
         let paramIndex = 1;
@@ -135,6 +149,43 @@ router.delete('/:id', authenticateToken, requireRole('superadmin'), async (req, 
     }
 });
 
+// 复制报表（仅超级管理员）
+router.post('/:id/copy', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
+    try {
+        // 1. 获取原始报表
+        const checkResult = await pool.query('SELECT * FROM reports WHERE id = $1', [req.params.id]);
+        if (checkResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Report not found' });
+        }
+
+        const originalReport = checkResult.rows[0];
+
+        // 2. 准备新数据
+        const newId = generateId();
+        const newName = `${originalReport.name} (副本)`;
+
+        // 3. 插入新记录
+        await pool.query(
+            'INSERT INTO reports (id, name, description, created_by, config, access_rules) VALUES ($1, $2, $3, $4, $5, $6)',
+            [
+                newId,
+                newName,
+                originalReport.description,
+                req.user.id, // 新报表的创建者是当前操作用户
+                originalReport.config, // 复用配置
+                originalReport.access_rules // 复用权限规则
+            ]
+        );
+
+        // 4. 返回新报表
+        const result = await pool.query('SELECT * FROM reports WHERE id = $1', [newId]);
+        res.status(201).json(toCamelCaseObject(result.rows[0]));
+
+    } catch (error) {
+        next(error);
+    }
+});
+
 // 执行报表查询（生成统计数据）
 router.post('/:id/execute', authenticateToken, async (req, res, next) => {
     try {
@@ -162,7 +213,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
 
         const config = report.config;
         let { selectedForms, selectedFields, aggregations, calculations, filters } = config;
-        
+
         // 调试日志：记录用户信息和过滤条件
         console.log('[Report Execute] User info:', {
             id: req.user.id,
@@ -214,7 +265,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 }
             }
         }
-        
+
         // 获取表单名称映射（用于生成唯一的聚合列名）
         const formNameMap = {};
         if (selectedForms && selectedForms.length > 0) {
@@ -225,10 +276,10 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 }
             }
         }
-        
+
         // 检查是否有聚合函数（需要在构建字段之前检查）
         const hasAggregations = aggregations && aggregations.length > 0;
-        
+
         // 关键修复：为跨表单聚合构建字段ID映射
         // 对于每个分组字段，从所有选中表单中查找同名字段的所有字段ID
         const groupingFieldIdsMap = {}; // fieldName -> [fieldId1, fieldId2, ...]
@@ -250,7 +301,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     }
                 });
             }
-            
+
             // 为每个分组字段查找所有表单中的字段ID
             for (const field of selectedFields) {
                 if (field && field.fieldName && groupByFieldIds.has(field.fieldId)) {
@@ -286,7 +337,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
         let selectClauses = [];
         const queryParams = [];
         let paramIndex = 1;
-        
+
         // 确定哪些字段用于分组（非聚合字段，且不是数字类型或不是聚合目标）
         // 用于分组的字段通常是文本类型字段，如"鱼类品种"
         const groupByFieldIds = new Set();
@@ -300,7 +351,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     }
                 });
             }
-            
+
             // 只有未被聚合的字段才用于分组
             selectedFields.forEach(field => {
                 if (field.formId && field.fieldId && !aggregatedFieldIds.has(field.fieldId)) {
@@ -308,14 +359,14 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 }
             });
         }
-        
+
         // 添加选择的字段（从batch_data JSONB中提取）
         // 支持字段ID和字段名称两种格式
         for (const field of selectedFields || []) {
             if (field.formId && field.fieldId) {
                 const fieldId = field.fieldId;
                 const fieldName = field.fieldName || fieldId;
-                
+
                 if (hasAggregations) {
                     // 如果有聚合函数，从batch_row中提取（用于GROUP BY）
                     // 尝试字段ID，如果不存在则尝试字段名称
@@ -352,7 +403,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 const suffix = getAggregationSuffix(func);
                 // 使用表单名+字段名确保列名唯一性，避免不同表单的同名字段产生冲突
                 const uniqueColName = `${formName}_${fieldName}_${suffix}`;
-                
+
                 // 使用 CASE WHEN 确保只聚合该表单的数据
                 if (func === 'COUNT') {
                     // COUNT可以用于任何类型
@@ -393,12 +444,12 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 }
             }
         }
-        
+
         // 如果有聚合函数且有计算字段，计算字段需要在子查询的外层处理
         // 否则，计算字段可以直接添加到selectClauses中
         const hasCalculations = calculations && calculations.length > 0;
         const needsSubquery = hasAggregations && hasCalculations;
-        
+
         if (!needsSubquery) {
             // 没有聚合函数，或者有聚合函数但没有计算字段，可以直接添加计算字段
             for (const calc of calculations || []) {
@@ -428,14 +479,14 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
         }
 
         if (selectClauses.length === 0) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: '未选择任何字段',
                 suggestion: '请至少选择一个字段、聚合函数或计算字段'
             });
         }
 
         const hasNonAggregatedFields = selectedFields && selectedFields.length > 0;
-        
+
         // 构建基础查询
         // 如果使用聚合函数且有计算字段，需要使用子查询（因为PostgreSQL不允许在同一SELECT中引用列别名）
         let query;
@@ -443,14 +494,14 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             // 构建内层查询（聚合查询，不包含计算字段）
             // 只选择用于分组的字段和聚合字段，不选择其他非聚合字段
             const innerSelectClauses = [];
-            
+
             // 只添加用于分组的字段（非聚合字段）
             // 关键修复：对于跨表单聚合，分组字段需要从所有表单中都能提取到
             // 使用字段名称作为主要匹配依据，因为不同表单中同名字段的ID可能不同
             for (const field of selectedFields || []) {
                 if (field.formId && field.fieldId && groupByFieldIds.has(field.fieldId)) {
                     const fieldName = field.fieldName || field.fieldId;
-                    
+
                     // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
                     if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
                         const allFieldIds = groupingFieldIdsMap[fieldName];
@@ -464,7 +515,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     }
                 }
             }
-            
+
             // 添加所有聚合字段
             const aggregatedFieldIds = new Set();
             for (const agg of aggregations || []) {
@@ -477,7 +528,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     const suffix = getAggregationSuffix(func);
                     // 使用表单名+字段名确保列名唯一性，避免不同表单的同名字段产生冲突
                     const uniqueColName = `${formName}_${fieldName}_${suffix}`;
-                    
+
                     // 关键修复：对于跨表单聚合，需要确保每个聚合字段只从它所属的表单中聚合数据
                     // 使用 CASE WHEN 确保只聚合该表单的数据，这样即使其他表单没有该字段，也不会影响聚合结果
                     if (func === 'COUNT') {
@@ -501,7 +552,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     }
                 }
             }
-            
+
             // 收集计算字段中引用的所有字段ID
             const calculationFieldIds = new Set();
             if (calculations && calculations.length > 0) {
@@ -519,7 +570,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     }
                 }
             }
-            
+
             // 对于计算字段中引用但不在聚合函数中也不在selectedFields中的字段，自动添加聚合
             const selectedFieldIds = new Set();
             if (selectedFields && selectedFields.length > 0) {
@@ -529,7 +580,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     }
                 });
             }
-            
+
             for (const fieldId of calculationFieldIds) {
                 // 如果这个字段既不在聚合函数中，也不在selectedFields中，需要自动添加
                 if (!aggregatedFieldIds.has(fieldId) && !selectedFieldIds.has(fieldId)) {
@@ -538,12 +589,12 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                         'SELECT id, name, type, form_id FROM form_fields WHERE id = $1 AND active = true',
                         [fieldId]
                     );
-                    
+
                     if (fieldResult.rows.length > 0) {
                         const field = fieldResult.rows[0];
                         const foundFormId = field.form_id;
                         const foundFieldName = field.name;
-                        
+
                         // 检查这个字段所属的表单是否在选中的表单列表中
                         if (selectedForms && selectedForms.includes(foundFormId)) {
                             // 自动添加AVG聚合（因为通常用于计算的平均值）
@@ -566,116 +617,116 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     }
                 }
             }
-            
-            let innerQuery = `SELECT ${innerSelectClauses.join(', ')} FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = 'active'`;
-                
-                // 添加表单过滤（在GROUP BY之前）
-                if (selectedForms && selectedForms.length > 0) {
-                    innerQuery += ` AND form_id = ANY($${paramIndex++}::text[])`;
-                    queryParams.push(selectedForms);
-                }
 
-                // 添加基地过滤（在GROUP BY之前）
-                if (req.user.role === 'base_manager' && req.user.baseId) {
-                    innerQuery += ` AND base_id = $${paramIndex++}`;
-                    queryParams.push(req.user.baseId);
-                    console.log('[Report Execute] Added base filter for base_manager, baseId:', req.user.baseId);
-                } else if (req.user.role === 'base_manager') {
-                    console.warn('[Report Execute] base_manager user has no baseId!');
-                }
-                
-                // 如果有非聚合字段，需要添加GROUP BY（必须在WHERE之后）
-                // 只对用于分组的字段进行GROUP BY（不包括被聚合的字段）
-                // 关键修复：对于跨表单聚合，GROUP BY 也需要使用所有可能的字段ID
-                if (groupByFieldIds.size > 0) {
-                    const groupByFields = selectedFields
-                        .filter(field => field && typeof field === 'object' && field.formId && field.fieldId && groupByFieldIds.has(field.fieldId))
-                        .map(field => {
-                            const fieldName = field.fieldName || field.fieldId;
-                            
-                            // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
-                            if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
-                                const allFieldIds = groupingFieldIdsMap[fieldName];
-                                // 构建COALESCE链，尝试所有可能的字段ID和字段名称
-                                const coalesceChain = allFieldIds.map(id => `batch_row->>'${id}'`).join(', ');
-                                return `COALESCE(${coalesceChain})`;
-                            } else {
-                                // 单表单或未构建映射，使用原来的逻辑
-                                const fieldId = field.fieldId;
-                                return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
-                            }
-                        });
-                    
-                    if (groupByFields.length > 0) {
-                        innerQuery += ` GROUP BY ${groupByFields.join(', ')}`;
-                    }
-                }
-                
-                // 构建外层查询（计算字段查询）
-                // 使用 subq 作为子查询别名（避免使用 inner 关键字）
-                const outerSelectClauses = [];
-                
-                // 只添加内层查询中实际存在的列：
-                // 1. 用于分组的字段（非聚合字段）
-                for (const field of selectedFields || []) {
-                    if (field.formId && field.fieldId && groupByFieldIds.has(field.fieldId)) {
+            let innerQuery = `SELECT ${innerSelectClauses.join(', ')} FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = 'active'`;
+
+            // 添加表单过滤（在GROUP BY之前）
+            if (selectedForms && selectedForms.length > 0) {
+                innerQuery += ` AND form_id = ANY($${paramIndex++}::text[])`;
+                queryParams.push(selectedForms);
+            }
+
+            // 添加基地过滤（在GROUP BY之前）
+            if (req.user.role === 'base_manager' && req.user.baseId) {
+                innerQuery += ` AND base_id = $${paramIndex++}`;
+                queryParams.push(req.user.baseId);
+                console.log('[Report Execute] Added base filter for base_manager, baseId:', req.user.baseId);
+            } else if (req.user.role === 'base_manager') {
+                console.warn('[Report Execute] base_manager user has no baseId!');
+            }
+
+            // 如果有非聚合字段，需要添加GROUP BY（必须在WHERE之后）
+            // 只对用于分组的字段进行GROUP BY（不包括被聚合的字段）
+            // 关键修复：对于跨表单聚合，GROUP BY 也需要使用所有可能的字段ID
+            if (groupByFieldIds.size > 0) {
+                const groupByFields = selectedFields
+                    .filter(field => field && typeof field === 'object' && field.formId && field.fieldId && groupByFieldIds.has(field.fieldId))
+                    .map(field => {
                         const fieldName = field.fieldName || field.fieldId;
-                        // 使用双引号包裹列名，确保特殊字符正确处理
+
+                        // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
+                        if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
+                            const allFieldIds = groupingFieldIdsMap[fieldName];
+                            // 构建COALESCE链，尝试所有可能的字段ID和字段名称
+                            const coalesceChain = allFieldIds.map(id => `batch_row->>'${id}'`).join(', ');
+                            return `COALESCE(${coalesceChain})`;
+                        } else {
+                            // 单表单或未构建映射，使用原来的逻辑
+                            const fieldId = field.fieldId;
+                            return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
+                        }
+                    });
+
+                if (groupByFields.length > 0) {
+                    innerQuery += ` GROUP BY ${groupByFields.join(', ')}`;
+                }
+            }
+
+            // 构建外层查询（计算字段查询）
+            // 使用 subq 作为子查询别名（避免使用 inner 关键字）
+            const outerSelectClauses = [];
+
+            // 只添加内层查询中实际存在的列：
+            // 1. 用于分组的字段（非聚合字段）
+            for (const field of selectedFields || []) {
+                if (field.formId && field.fieldId && groupByFieldIds.has(field.fieldId)) {
+                    const fieldName = field.fieldName || field.fieldId;
+                    // 使用双引号包裹列名，确保特殊字符正确处理
+                    const escapedFieldName = fieldName.replace(/"/g, '""'); // 转义双引号
+                    outerSelectClauses.push(`subq."${escapedFieldName}"`);
+                }
+            }
+
+            // 2. 所有聚合列
+            for (const agg of aggregations || []) {
+                if (agg.formId && agg.fieldId && agg.function) {
+                    const func = agg.function.toUpperCase();
+                    const fieldId = agg.fieldId;
+                    const fieldName = agg.fieldName || fieldId;
+                    const formName = formNameMap[agg.formId] || agg.formId;
+                    const suffix = getAggregationSuffix(func);
+                    // 使用表单名+字段名确保列名唯一性
+                    const aggColName = `${formName}_${fieldName}_${suffix}`;
+                    const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
+                    outerSelectClauses.push(`subq."${escapedColName}"`);
+                }
+            }
+
+            // 添加计算字段（使用内层查询的列名）
+            for (const calc of calculations || []) {
+                if (calc.expression) {
+                    let expr = calc.expression;
+                    // 替换字段ID为内层查询的列名引用
+                    const fieldIdPattern = /(\w+)/g;
+                    expr = expr.replace(fieldIdPattern, (match) => {
+                        // 检查是否是运算符或数字
+                        if (['+', '-', '*', '/', '(', ')'].includes(match) || !isNaN(match)) {
+                            return match;
+                        }
+                        // 如果该字段有聚合函数，使用聚合列名，并用 COALESCE 处理 NULL
+                        if (aggregationColumnMap[match]) {
+                            const aggColName = aggregationColumnMap[match].replace(/"/g, ''); // 移除引号
+                            const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
+                            return `COALESCE(subq."${escapedColName}", 0)`;
+                        }
+                        // 否则使用普通字段名，并用 COALESCE 处理 NULL
+                        const fieldName = fieldNameMap[match] || match;
                         const escapedFieldName = fieldName.replace(/"/g, '""'); // 转义双引号
-                        outerSelectClauses.push(`subq."${escapedFieldName}"`);
-                    }
+                        return `COALESCE(subq."${escapedFieldName}", 0)`;
+                    });
+                    const escapedCalcName = calc.name.replace(/"/g, '""'); // 转义双引号
+                    // 应用数字格式（如果设置了 decimalPlaces）
+                    const decimalPlaces = calc.decimalPlaces !== undefined ? parseInt(calc.decimalPlaces) : 2;
+                    const formattedExpr = `ROUND((${expr})::numeric, ${decimalPlaces})`;
+                    outerSelectClauses.push(`${formattedExpr} as "${escapedCalcName}"`);
                 }
-                
-                // 2. 所有聚合列
-                for (const agg of aggregations || []) {
-                    if (agg.formId && agg.fieldId && agg.function) {
-                        const func = agg.function.toUpperCase();
-                        const fieldId = agg.fieldId;
-                        const fieldName = agg.fieldName || fieldId;
-                        const formName = formNameMap[agg.formId] || agg.formId;
-                        const suffix = getAggregationSuffix(func);
-                        // 使用表单名+字段名确保列名唯一性
-                        const aggColName = `${formName}_${fieldName}_${suffix}`;
-                        const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
-                        outerSelectClauses.push(`subq."${escapedColName}"`);
-                    }
-                }
-                
-                // 添加计算字段（使用内层查询的列名）
-                for (const calc of calculations || []) {
-                    if (calc.expression) {
-                        let expr = calc.expression;
-                        // 替换字段ID为内层查询的列名引用
-                        const fieldIdPattern = /(\w+)/g;
-                        expr = expr.replace(fieldIdPattern, (match) => {
-                            // 检查是否是运算符或数字
-                            if (['+', '-', '*', '/', '(', ')'].includes(match) || !isNaN(match)) {
-                                return match;
-                            }
-                            // 如果该字段有聚合函数，使用聚合列名，并用 COALESCE 处理 NULL
-                            if (aggregationColumnMap[match]) {
-                                const aggColName = aggregationColumnMap[match].replace(/"/g, ''); // 移除引号
-                                const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
-                                return `COALESCE(subq."${escapedColName}", 0)`;
-                            }
-                            // 否则使用普通字段名，并用 COALESCE 处理 NULL
-                            const fieldName = fieldNameMap[match] || match;
-                            const escapedFieldName = fieldName.replace(/"/g, '""'); // 转义双引号
-                            return `COALESCE(subq."${escapedFieldName}", 0)`;
-                        });
-                        const escapedCalcName = calc.name.replace(/"/g, '""'); // 转义双引号
-                        // 应用数字格式（如果设置了 decimalPlaces）
-                        const decimalPlaces = calc.decimalPlaces !== undefined ? parseInt(calc.decimalPlaces) : 2;
-                        const formattedExpr = `ROUND((${expr})::numeric, ${decimalPlaces})`;
-                        outerSelectClauses.push(`${formattedExpr} as "${escapedCalcName}"`);
-                    }
-                }
-                
-                query = `SELECT ${outerSelectClauses.join(', ')} FROM (${innerQuery}) as subq`;
+            }
+
+            query = `SELECT ${outerSelectClauses.join(', ')} FROM (${innerQuery}) as subq`;
         } else if (hasAggregations) {
             // 有聚合函数但没有计算字段，直接使用聚合查询
             query = `SELECT ${selectClauses.join(', ')} FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = 'active'`;
-            
+
             // 添加表单过滤（在GROUP BY之前）
             if (selectedForms && selectedForms.length > 0) {
                 query += ` AND form_id = ANY($${paramIndex++}::text[])`;
@@ -690,7 +741,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             } else if (req.user.role === 'base_manager') {
                 console.warn('[Report Execute] base_manager user has no baseId!');
             }
-            
+
             // 如果有非聚合字段，需要添加GROUP BY（必须在WHERE之后）
             // 只对用于分组的字段进行GROUP BY（不包括被聚合的字段）
             // 关键修复：对于跨表单聚合，GROUP BY 也需要使用所有可能的字段ID
@@ -699,7 +750,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     .filter(field => field && typeof field === 'object' && field.formId && field.fieldId && groupByFieldIds.has(field.fieldId))
                     .map(field => {
                         const fieldName = field.fieldName || field.fieldId;
-                        
+
                         // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
                         if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
                             const allFieldIds = groupingFieldIdsMap[fieldName];
@@ -712,7 +763,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                             return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
                         }
                     });
-                
+
                 if (groupByFields.length > 0) {
                     query += ` GROUP BY ${groupByFields.join(', ')}`;
                 }
@@ -720,7 +771,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
         } else {
             // 没有聚合函数，直接展开batch_data
             query = `SELECT ${selectClauses.join(', ')} FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = 'active'`;
-            
+
             // 添加表单过滤
             if (selectedForms && selectedForms.length > 0) {
                 query += ` AND form_id = ANY($${paramIndex++}::text[])`;
@@ -745,9 +796,9 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             console.log('Executing report query:', query);
             console.log('Query params:', queryParams);
             console.log('Report config:', JSON.stringify(config, null, 2));
-            
+
             queryResult = await pool.query(query, queryParams);
-            
+
             // 添加调试日志
             console.log('Query result rows:', queryResult.rows.length);
             if (queryResult.rows.length > 0) {
@@ -755,7 +806,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
             } else {
                 console.log('No rows returned. Checking if there are any assets...');
                 // 检查是否有匹配的资产
-                let checkQuery = hasAggregations 
+                let checkQuery = hasAggregations
                     ? 'SELECT COUNT(*) as count FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = \'active\''
                     : 'SELECT COUNT(*) as count FROM assets INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = \'active\'';
                 const checkParams = [];
@@ -770,7 +821,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 }
                 const checkResult = await pool.query(checkQuery, checkParams);
                 console.log('Total matching assets:', checkResult.rows[0]?.count || 0);
-                
+
                 // 检查batch_data的结构
                 if (selectedForms && selectedForms.length > 0) {
                     const sampleQuery = 'SELECT id, form_id, batch_data FROM assets WHERE form_id = ANY($1::text[]) LIMIT 1';
@@ -809,7 +860,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
         }
 
         res.json({
-            report: report,
+            report: toCamelCaseObject(report),
             data: applySortOrders(filteredRows, config.sortOrders),
             total: filteredRows.length
         });
@@ -951,7 +1002,7 @@ function canAccessReport(report, user) {
     if (user?.role === 'base_handler') {
         return false;
     }
-    
+
     // 兼容处理：created_by 可能是下划线命名（数据库原始）或驼峰命名（经过转换）
     const createdBy = report.created_by || report.createdBy;
     if (user.role === 'superadmin' || createdBy === user.id) {
@@ -961,7 +1012,7 @@ function canAccessReport(report, user) {
     // 兼容处理：access_rules 可能是下划线命名（数据库原始）或驼峰命名（经过转换）
     const accessRules = report.access_rules || report.accessRules;
     const rules = normalizeAccessRules(accessRules);
-    
+
     // 调试日志
     console.log('[canAccessReport] Checking access:', {
         userRole: user.role,
@@ -974,9 +1025,163 @@ function canAccessReport(report, user) {
         hasRoleAccess: rules.roles.includes(user.role),
         hasUserAccess: rules.users.includes(user.id)
     });
-    
+
     return rules.roles.includes(user.role) || rules.users.includes(user.id);
 }
+
+// 归档报表（仅超级管理员）
+router.post('/:id/archive', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
+    try {
+        const reportId = req.params.id;
+
+        // 检查报表是否存在
+        const reportResult = await pool.query('SELECT * FROM reports WHERE id = $1', [reportId]);
+        if (reportResult.rows.length === 0) {
+            return res.status(404).json({ error: '报表不存在' });
+        }
+
+        const report = reportResult.rows[0];
+        if (report.archive_status === 'archived') {
+            return res.status(400).json({ error: '该报表已归档，不能重复归档' });
+        }
+
+        // 更新报表状态为已归档
+        const archivedAt = new Date();
+        await pool.query(
+            'UPDATE reports SET archive_status = $1, archived_at = $2, archived_by = $3 WHERE id = $4',
+            ['archived', archivedAt, req.user.id, reportId]
+        );
+
+        res.json({
+            success: true,
+            reportId,
+            archivedAt: archivedAt.toISOString(),
+            archivedBy: req.user.id
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// 取消归档报表（仅超级管理员）
+router.post('/:id/unarchive', authenticateToken, requireRole('superadmin'), async (req, res, next) => {
+    try {
+        const reportId = req.params.id;
+        const reportResult = await pool.query('SELECT * FROM reports WHERE id = $1', [reportId]);
+        if (reportResult.rows.length === 0) {
+            return res.status(404).json({ error: '报表不存在' });
+        }
+        const report = reportResult.rows[0];
+        if (report.archive_status !== 'archived') {
+            return res.status(400).json({ error: '该报表未归档，无需取消' });
+        }
+
+        await pool.query(
+            "UPDATE reports SET archive_status = 'active', archived_at = NULL, archived_by = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+            [reportId]
+        );
+
+        const refreshed = await pool.query('SELECT * FROM reports WHERE id = $1', [reportId]);
+        res.json(toCamelCaseObject(refreshed.rows[0]));
+    } catch (error) {
+        next(error);
+    }
+});
+
+// 更新备注（基地管理员、资产管理员、财务管理员）
+router.put('/:id/note', authenticateToken, async (req, res, next) => {
+    try {
+        const reportId = req.params.id;
+        const { note } = req.body;
+
+        // 检查用户角色
+        const userRole = req.user.role;
+        if (!['base_manager', 'company_asset', 'company_finance'].includes(userRole)) {
+            return res.status(403).json({ error: '您没有权限添加备注' });
+        }
+
+        // 检查报表是否存在且已归档
+        const reportResult = await pool.query('SELECT * FROM reports WHERE id = $1', [reportId]);
+        if (reportResult.rows.length === 0) {
+            return res.status(404).json({ error: '报表不存在' });
+        }
+
+        const report = reportResult.rows[0];
+        if (report.archive_status !== 'archived') {
+            return res.status(400).json({ error: '只能对已归档的报表添加备注' });
+        }
+
+        // 检查访问权限
+        if (!canAccessReport(report, req.user)) {
+            return res.status(403).json({ error: '您没有权限访问此报表' });
+        }
+
+        // notes JSON 结构：{ base_manager: { userId: note }, company_asset: {...}, company_finance: {...} }
+        const notes = report.notes || {};
+        const roleNotes = notes[userRole] || {};
+        roleNotes[req.user.id] = note || null;
+        notes[userRole] = roleNotes;
+
+        await pool.query(
+            `UPDATE reports SET notes = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+            [notes, reportId]
+        );
+
+        res.json({
+            success: true,
+            reportId,
+            notes
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// 行级备注（仅归档报表，基地/资产/财务）
+router.put('/:id/row-note', authenticateToken, async (req, res, next) => {
+    try {
+        const reportId = req.params.id;
+        const { rowKey, note } = req.body;
+        const userRole = req.user.role;
+
+        if (!['base_manager', 'company_asset', 'company_finance'].includes(userRole)) {
+            return res.status(403).json({ error: '您没有权限添加备注' });
+        }
+        if (!rowKey) {
+            return res.status(400).json({ error: 'rowKey is required' });
+        }
+
+        const reportResult = await pool.query('SELECT * FROM reports WHERE id = $1', [reportId]);
+        if (reportResult.rows.length === 0) {
+            return res.status(404).json({ error: '报表不存在' });
+        }
+        const report = reportResult.rows[0];
+        if (report.archive_status !== 'archived') {
+            return res.status(400).json({ error: '仅归档报表可填写行备注' });
+        }
+        if (!canAccessReport(report, req.user)) {
+            return res.status(403).json({ error: '您没有权限访问此报表' });
+        }
+
+        await ensureRowNotesColumn();
+
+        const rowNotes = report.row_notes || {};
+        const roleNotesForRow = rowNotes[rowKey] || {};
+        const userNotes = roleNotesForRow[userRole] || {};
+        userNotes[req.user.id] = note || '';
+        roleNotesForRow[userRole] = userNotes;
+        rowNotes[rowKey] = roleNotesForRow;
+
+        await pool.query(
+            'UPDATE reports SET row_notes = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+            [rowNotes, reportId]
+        );
+
+        res.json({ success: true, rowKey, notes: rowNotes[rowKey] });
+    } catch (error) {
+        next(error);
+    }
+});
 
 export { router as reportsRoutes };
 
@@ -990,12 +1195,12 @@ function applySortOrders(rows = [], sortOrders = []) {
         console.log('[applySortOrders] No valid sort orders');
         return rows;
     }
-    
+
     console.log('[applySortOrders] Applying sort orders:', validOrders);
     if (rows.length > 0) {
         console.log('[applySortOrders] Sample row keys:', Object.keys(rows[0]));
     }
-    
+
     const sortedRows = [...rows];
     sortedRows.sort((a, b) => {
         for (const order of validOrders) {

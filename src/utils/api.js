@@ -21,10 +21,13 @@ async function apiRequest(endpoint, options = {}) {
     const url = `${API_BASE_URL}${endpoint}`;
     const token = getToken();
 
+    const isFormData = options.body instanceof FormData;
+    const responseType = options.responseType;
+
     const config = {
         ...options,
         headers: {
-            'Content-Type': 'application/json',
+            ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
             ...(token && { Authorization: `Bearer ${token}` }),
             ...options.headers,
         },
@@ -32,11 +35,22 @@ async function apiRequest(endpoint, options = {}) {
 
     try {
         const response = await fetch(url, config);
-        
+
+        // Blob/stream
+        if (responseType === 'blob') {
+            const blob = await response.blob();
+            if (!response.ok) {
+                const error = new Error(`Request failed with status ${response.status}`);
+                error.response = { status: response.status };
+                throw error;
+            }
+            return blob;
+        }
+
         // 检查响应是否有内容
         const contentType = response.headers.get('content-type');
         let data;
-        
+
         if (contentType && contentType.includes('application/json')) {
             const text = await response.text();
             if (text) {
@@ -267,10 +281,21 @@ export const filesAPI = {
         return await apiRequest(`/files/${id}`);
     },
 
-    create: async (fileData) => {
+    create: async ({ file, fileName, allowedSubAccounts }) => {
+        const form = new FormData();
+        if (file) form.append('file', file);
+        if (fileName) form.append('fileName', fileName);
+        if (allowedSubAccounts) form.append('allowedSubAccounts', JSON.stringify(allowedSubAccounts));
         return await apiRequest('/files', {
             method: 'POST',
-            body: JSON.stringify(fileData),
+            body: form,
+        });
+    },
+
+    download: async (id) => {
+        return await apiRequest(`/files/${id}/download`, {
+            method: 'GET',
+            responseType: 'blob',
         });
     },
 
@@ -311,9 +336,41 @@ export const reportsAPI = {
         });
     },
 
+    copy: async (id) => {
+        return await apiRequest(`/reports/${id}/copy`, {
+            method: 'POST',
+        });
+    },
+
     execute: async (id) => {
         return await apiRequest(`/reports/${id}/execute`, {
             method: 'POST',
+        });
+    },
+
+    archive: async (id) => {
+        return await apiRequest(`/reports/${id}/archive`, {
+            method: 'POST',
+        });
+    },
+
+    unarchive: async (id) => {
+        return await apiRequest(`/reports/${id}/unarchive`, {
+            method: 'POST',
+        });
+    },
+
+    updateNote: async (id, note) => {
+        return await apiRequest(`/reports/${id}/note`, {
+            method: 'PUT',
+            body: JSON.stringify({ note }),
+        });
+    },
+
+    updateRowNote: async (id, rowKey, note) => {
+        return await apiRequest(`/reports/${id}/row-note`, {
+            method: 'PUT',
+            body: JSON.stringify({ rowKey, note }),
         });
     },
 };
