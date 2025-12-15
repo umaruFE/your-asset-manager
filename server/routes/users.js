@@ -58,18 +58,18 @@ router.get('/my-base-handlers', authenticateToken, async (req, res, next) => {
             return res.json(result.rows.map(toCamelCaseObject));
         }
         
-        // 公司资产员、公司财务：获取所有经手人（用于查看所有记录时显示提交人）
+        // 公司资产员、公司财务：获取除超级管理员外的所有用户（用于文件权限设置等）
         if (req.user.role === 'company_asset' || req.user.role === 'company_finance') {
-            console.log('[users.js] company_asset/company_finance 获取所有经手人');
+            console.log('[users.js] company_asset/company_finance 获取所有用户（除超级管理员）');
             const result = await pool.query(
                 `SELECT u.id, u.username, u.name, u.role, u.base_id, b.name as base_name 
                  FROM users u 
                  LEFT JOIN bases b ON u.base_id = b.id 
-                 WHERE u.role = 'base_handler' 
-                 ORDER BY u.name`
+                 WHERE u.role != 'superadmin' 
+                 ORDER BY u.role, u.name`
             );
 
-            console.log('[users.js] company_asset/company_finance 返回', result.rows.length, '个经手人');
+            console.log('[users.js] company_asset/company_finance 返回', result.rows.length, '个用户');
             return res.json(result.rows.map(toCamelCaseObject));
         }
 

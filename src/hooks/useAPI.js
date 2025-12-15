@@ -31,7 +31,7 @@ export function useAPI() {
                             break;
                         case 'allAppUsers':
                             // 根据用户角色决定获取哪些用户
-                            // 先尝试获取所有用户（超级管理员），如果失败则尝试获取经手人列表
+                            // 先尝试获取所有用户（超级管理员），如果失败则尝试获取用户列表
                             try {
                                 console.log('[useAPI] 尝试 getAll()...');
                                 result = await usersAPI.getAll();
@@ -39,8 +39,9 @@ export function useAPI() {
                                 error = null; // 成功时清除错误
                             } catch (err) {
                                 console.log('[useAPI] getAll() 失败，错误:', err.message, '状态:', err.response?.status);
-                                // 如果不是超级管理员，尝试获取基地经手人列表
-                                // 支持的角色：base_manager（自己基地的经手人）、company_asset、company_finance（所有经手人）
+                                // 如果不是超级管理员，尝试获取用户列表
+                                // base_manager：获取自己基地的经手人
+                                // company_asset、company_finance：获取除超级管理员外的所有用户（包括基地经手人、基地负责人、资产员、财务员）
                                 try {
                                     console.log('[useAPI] 尝试 getMyBaseHandlers()...');
                                     result = await usersAPI.getMyBaseHandlers();

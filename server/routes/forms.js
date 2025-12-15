@@ -644,7 +644,8 @@ router.post('/:id/archive', authenticateToken, requireRole('company_asset', 'sup
 // 查看归档列表
 router.get('/:id/archives', authenticateToken, async (req, res, next) => {
     try {
-        if (req.user.role !== 'superadmin') {
+        // 超级管理员和资产管理员可以查看所有表单的归档列表
+        if (req.user.role !== 'superadmin' && req.user.role !== 'company_asset') {
             const hasPermission = await checkFormPermission(req.user.id, req.params.id);
             if (!hasPermission) {
                 return res.status(403).json({ error: 'Insufficient permissions' });
@@ -672,7 +673,8 @@ router.get('/archives/:archiveId/download', authenticateToken, async (req, res, 
 
         const archive = result.rows[0];
 
-        if (req.user.role !== 'superadmin') {
+        // 超级管理员和资产管理员可以下载所有归档文件
+        if (req.user.role !== 'superadmin' && req.user.role !== 'company_asset') {
             const hasPermission = await checkFormPermission(req.user.id, archive.form_id);
             if (!hasPermission) {
                 return res.status(403).json({ error: 'Insufficient permissions' });
@@ -714,7 +716,8 @@ router.get('/:id/export', authenticateToken, async (req, res, next) => {
         }
         const form = formResult.rows[0];
 
-        if (req.user.role !== 'superadmin') {
+        // 超级管理员和资产管理员可以导出所有表单
+        if (req.user.role !== 'superadmin' && req.user.role !== 'company_asset') {
             const hasPermission = await checkFormPermission(req.user.id, form.id);
             if (!hasPermission) {
                 return res.status(403).json({ error: 'Insufficient permissions' });

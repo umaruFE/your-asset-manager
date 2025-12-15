@@ -311,6 +311,13 @@ export const filesAPI = {
             method: 'DELETE',
         });
     },
+
+    updatePermissions: async (id, allowedSubAccounts) => {
+        return await apiRequest(`/files/${id}/permissions`, {
+            method: 'PUT',
+            body: JSON.stringify({ allowedSubAccounts }),
+        });
+    },
 };
 
 // 报表API
