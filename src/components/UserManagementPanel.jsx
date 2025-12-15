@@ -10,6 +10,9 @@ export default function UserManagementPanel({ getCollectionHook }) {
     const [error, setError] = useState(null);
     const [selectedUser, setSelectedUser] = useState(null);
     const [showUserForm, setShowUserForm] = useState(false);
+    const [editingUser, setEditingUser] = useState(null);
+    const [editForm, setEditForm] = useState({ username: '', password: '', confirmPassword: '' });
+    const [editError, setEditError] = useState('');
     const [showPermissionForm, setShowPermissionForm] = useState(false);
     const [userPermissions, setUserPermissions] = useState([]);
     
@@ -70,6 +73,45 @@ export default function UserManagementPanel({ getCollectionHook }) {
             window.location.reload();
         } catch (err) {
             alert('删除用户失败: ' + err.message);
+        }
+    };
+
+    // 打开编辑用户弹窗
+    const handleOpenEditUser = (user) => {
+        setEditError('');
+        setEditingUser(user);
+        setEditForm({
+            username: user.username || '',
+            password: '',
+            confirmPassword: ''
+        });
+    };
+
+    // 保存编辑
+    const handleSaveEditUser = async () => {
+        if (!editForm.username) {
+            setEditError('用户名不能为空');
+            return;
+        }
+        if (editForm.password && editForm.password.length < 6) {
+            setEditError('密码长度不能少于6位');
+            return;
+        }
+        if (editForm.password && editForm.password !== editForm.confirmPassword) {
+            setEditError('两次输入的密码不一致');
+            return;
+        }
+
+        try {
+            const payload = { username: editForm.username };
+            if (editForm.password) {
+                payload.password = editForm.password;
+            }
+            await usersAPI.update(editingUser.id, payload);
+            setEditingUser(null);
+            window.location.reload();
+        } catch (err) {
+            setEditError(err.message || '保存失败');
         }
     };
 
@@ -315,6 +357,13 @@ export default function UserManagementPanel({ getCollectionHook }) {
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{u.base_name || '-'}</td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => handleOpenEditUser(u)}
+                                        >
+                                            编辑
+                                        </Button>
                                         {/* <Button
                                             size="sm"
                                             variant="outline"
@@ -407,6 +456,54 @@ export default function UserManagementPanel({ getCollectionHook }) {
                     <div className="mt-6 flex justify-end space-x-3">
                         <Button variant="outline" onClick={confirmModal.close}>取消</Button>
                         <Button variant="danger" onClick={confirmModal.props.onConfirm}>确认删除</Button>
+                    </div>
+                </Modal>
+            )}
+
+            {/* 编辑用户模态框 */}
+            {editingUser && (
+                <Modal
+                    isOpen={!!editingUser}
+                    onClose={() => setEditingUser(null)}
+                    title={`修改用户：${editingUser.name || editingUser.username}`}
+                >
+                    <div className="space-y-4">
+                        {editError && (
+                            <div className="p-3 bg-red-100 border border-red-300 text-red-700 rounded-lg text-sm">
+                                {editError}
+                            </div>
+                        )}
+                        <InputGroup label="用户名">
+                            <input
+                                type="text"
+                                value={editForm.username}
+                                onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                required
+                            />
+                        </InputGroup>
+                        <InputGroup label="新密码（可选，留空则不修改）">
+                            <input
+                                type="password"
+                                value={editForm.password}
+                                onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                placeholder="至少6位"
+                            />
+                        </InputGroup>
+                        <InputGroup label="确认新密码">
+                            <input
+                                type="password"
+                                value={editForm.confirmPassword}
+                                onChange={(e) => setEditForm({ ...editForm, confirmPassword: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                                placeholder="再次输入新密码"
+                            />
+                        </InputGroup>
+                        <div className="flex justify-end space-x-3">
+                            <Button variant="outline" onClick={() => setEditingUser(null)}>取消</Button>
+                            <Button variant="primary" onClick={handleSaveEditUser}>保存</Button>
+                        </div>
                     </div>
                 </Modal>
             )}
