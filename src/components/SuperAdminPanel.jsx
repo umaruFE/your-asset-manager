@@ -974,7 +974,11 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{field.name}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                             {field.type === 'formula' ? '公式 (Formula)' :
-                                                field.type === 'number' ? '数字 (Number)' : field.type === 'date' ? '日期 (Date)' : '文本 (Text)'}
+                                                field.type === 'number' ? '数字 (Number)' : 
+                                                field.type === 'date' ? '日期 (Date)' : 
+                                                field.type === 'textarea' ? '长文本 (Textarea)' :
+                                                field.type === 'select' ? '下拉单选 (Select)' :
+                                                '文本 (Text)'}
                                         </td>
                                         <td className="px-6 py-4 text-sm text-gray-500 max-w-sm truncate font-mono text-xs">
                                             {field.type === 'formula' ? field.formula : field.id}
