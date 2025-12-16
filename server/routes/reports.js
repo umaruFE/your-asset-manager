@@ -981,13 +981,15 @@ function normalizeAccessRules(rules) {
                 && role.trim().length > 0
                 && role !== 'base_handler' // 基地经手人无权查看统计报表
             )))
-            : defaultRules.roles,
+            : [],
         users: Array.isArray(parsedRules.users)
             ? Array.from(new Set(parsedRules.users.filter(userId => typeof userId === 'string' && userId.trim().length > 0)))
             : []
     };
 
-    if (normalized.roles.length === 0) {
+    // 只有在 roles 和 users 都为空时，才使用默认值（用于兼容旧数据或无效数据）
+    // 如果用户明确选择了空的 roles 但选择了 users，应该保留空的 roles
+    if (normalized.roles.length === 0 && normalized.users.length === 0) {
         normalized.roles = defaultRules.roles;
     }
 

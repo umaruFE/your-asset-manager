@@ -49,13 +49,19 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
         const roles = Array.isArray(parsed.roles)
             ? Array.from(new Set(parsed.roles.filter(r => r && r !== 'base_handler')))
-            : defaultRules.roles;
+            : [];
         const users = Array.isArray(parsed.users)
             ? Array.from(new Set(parsed.users.filter(u => !!u)))
             : [];
 
+        // 只有在 roles 和 users 都为空时，才使用默认值（用于兼容旧数据）
+        // 如果用户明确选择了空的 roles 但选择了 users，应该保留空的 roles
+        if (roles.length === 0 && users.length === 0) {
+            return defaultRules;
+        }
+
         return {
-            roles: roles.length > 0 ? roles : defaultRules.roles,
+            roles,
             users
         };
     };
@@ -845,10 +851,11 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
     };
 
     const buildAccessRules = () => {
-        return normalizeAccessRules({
-            roles: accessRoles,
-            users: accessUsers
-        });
+        // 保存时直接返回用户选择的值，不应用默认值
+        return {
+            roles: Array.from(new Set(accessRoles.filter(r => r && r !== 'base_handler'))),
+            users: Array.from(new Set(accessUsers.filter(u => !!u)))
+        };
     };
 
     // 保存报表

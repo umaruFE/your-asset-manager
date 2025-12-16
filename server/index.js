@@ -23,7 +23,11 @@ const uploadsDir = path.join(__dirname, 'storage', 'uploads');
 
 // 中间件
 app.use(cors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+    origin: [
+        'http://localhost:5173',
+        'http://localhost:5174',
+        process.env.CORS_ORIGIN
+    ].filter(Boolean),
     credentials: true
 }));
 app.use(express.json());
@@ -50,7 +54,7 @@ app.use((err, req, res, next) => {
     console.error('Error stack:', err.stack);
     res.status(err.status || 500).json({
         error: err.message || 'Internal server error',
-        ...(process.env.NODE_ENV === 'development' && { 
+        ...(process.env.NODE_ENV === 'development' && {
             stack: err.stack,
             details: err.detail || err.code
         })
@@ -68,7 +72,7 @@ testConnection().then(connected => {
         console.error('Failed to connect to database. Please check your database configuration.');
         process.exit(1);
     }
-    
+
     app.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);
         console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
