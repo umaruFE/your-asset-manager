@@ -23,9 +23,14 @@ export default function SubAccountPanel({ user, getCollectionHook, hideDataFiles
   const [activeTabId, setActiveTabId] = useState('myAssets');
 
   // Filter and sort active forms for the side navigation
+  // hideDataFilesSidebar: 在登记表格录入视图中使用，仅显示有提交权限的表单
   const availableForms = useMemo(() => {
-      return forms.filter(f => f.isActive).sort((a, b) => a.name.localeCompare(b.name));
-  }, [forms]);
+      const activeForms = forms.filter(f => f.isActive);
+      const filtered = hideDataFilesSidebar
+        ? activeForms.filter(f => f.can_submit || f.canSubmit)
+        : activeForms;
+      return filtered.sort((a, b) => a.name.localeCompare(b.name));
+  }, [forms, hideDataFilesSidebar]);
   
   // Find the currently active tab details
   const activeTabDetails = useMemo(() => openTabs.find(t => t.id === activeTabId), [openTabs, activeTabId]);

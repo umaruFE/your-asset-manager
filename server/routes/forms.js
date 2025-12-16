@@ -66,8 +66,40 @@ router.get('/', authenticateToken, async (req, res, next) => {
 
         const result = await pool.query(query, params);
 
+        // 获取当前用户的提交/查看权限映射（用于前端筛选可提交表单）
+        let permissionMap = {};
+        if (req.user.role !== 'superadmin') {
+            try {
+                const permResult = await pool.query(
+                    `SELECT form_id, COALESCE(can_submit, can_edit, false) AS can_submit, COALESCE(can_view, false) AS can_view
+                     FROM user_form_permissions
+                     WHERE user_id = $1`,
+                    [req.user.id]
+                );
+                permResult.rows.forEach(p => {
+                    permissionMap[p.form_id] = {
+                        can_submit: p.can_submit === true,
+                        can_view: p.can_view === true
+                    };
+                });
+            } catch (err) {
+                console.error('Error fetching user_form_permissions:', err);
+                permissionMap = {};
+            }
+        }
+
         // 获取每个表单的字段
         for (let form of result.rows) {
+            // 补充权限标记：can_submit / can_view
+            if (req.user.role === 'superadmin') {
+                form.can_submit = true;
+                form.can_view = true;
+            } else {
+                const perm = permissionMap[form.id];
+                form.can_submit = perm ? perm.can_submit : false;
+                form.can_view = perm ? perm.can_view : false;
+            }
+
             // 超级管理员可以看到所有字段（包括已归档的），其他角色只能看到激活的字段
             const fieldsQuery = req.user.role === 'superadmin'
                 ? 'SELECT * FROM form_fields WHERE form_id = $1 ORDER BY "order" ASC'
