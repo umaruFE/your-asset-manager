@@ -53,9 +53,10 @@ export default function Dashboard({ user, onLogout, getCollectionHook }) {
       case 'base_handler':
         return <SubAccountPanel user={user} getCollectionHook={getCollectionHook} />;
       case 'base_manager':
+        return <AdminPanel user={user} getCollectionHook={getCollectionHook} />;
       case 'company_asset':
       case 'company_finance':
-        // 这些角色可以查看数据和创建报表
+        // 公司资产员 / 公司财务：使用 AdminPanel 顶部 Tab（含“登记表格录入”）
         return <AdminPanel user={user} getCollectionHook={getCollectionHook} />;
       case 'superadmin':
         return <SuperAdminPanel user={user} getCollectionHook={getCollectionHook} />;

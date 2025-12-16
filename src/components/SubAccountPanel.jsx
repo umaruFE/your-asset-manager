@@ -14,7 +14,7 @@ const STATIC_TABS = {
     viewFiles: { id: 'viewFiles', label: '查看文件', icon: FileText, type: 'static' },
 };
 
-export default function SubAccountPanel({ user, getCollectionHook }) {
+export default function SubAccountPanel({ user, getCollectionHook, hideDataFilesSidebar = false }) {
   const { data: forms } = getCollectionHook('forms');
   const tabsContainerRef = useRef(null); // Ref for the scrollable tab area
   
@@ -185,46 +185,50 @@ export default function SubAccountPanel({ user, getCollectionHook }) {
                 ))}
             </nav>
 
-            <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
-                <Database className="w-5 h-5 mr-2 text-gray-600" />
-                数据与文件
-            </h3>
-            <nav className="space-y-2">
-                {Object.values(STATIC_TABS).map(tab => {
-                    const Icon = tab.icon;
-                    const isUnarchivedDocs = tab.id === 'myAssets';
-                    
-                    if (isUnarchivedDocs) {
-                        // 未归档文档作为可展开的父节点
+            {!hideDataFilesSidebar && (
+              <>
+                <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
+                    <Database className="w-5 h-5 mr-2 text-gray-600" />
+                    数据与文件
+                </h3>
+                <nav className="space-y-2">
+                    {Object.values(STATIC_TABS).map(tab => {
+                        const Icon = tab.icon;
+                        const isUnarchivedDocs = tab.id === 'myAssets';
+                        
+                        if (isUnarchivedDocs) {
+                            // 未归档文档作为可展开的父节点
+                            return (
+                                <UnarchivedDocsTree
+                                    key={tab.id}
+                                    tab={tab}
+                                    forms={forms}
+                                    assets={getCollectionHook('assets').data}
+                                    user={user}
+                                    activeTabId={activeTabId}
+                                    onFormClick={(form) => {
+                                        handleStaticClick(tab, form ? form.id : null);
+                                    }}
+                                />
+                            );
+                        }
+                        
                         return (
-                            <UnarchivedDocsTree
+                            <button
                                 key={tab.id}
-                                tab={tab}
-                                forms={forms}
-                                assets={getCollectionHook('assets').data}
-                                user={user}
-                                activeTabId={activeTabId}
-                                onFormClick={(form) => {
-                                    handleStaticClick(tab, form ? form.id : null);
-                                }}
-                            />
+                                onClick={() => handleStaticClick(tab)}
+                                className={`w-full text-left p-3 rounded-lg flex items-center transition-colors duration-150
+                                    ${activeTabId === tab.id ? 'bg-green-100 text-green-700 font-semibold shadow-sm' : 'hover:bg-gray-50 text-gray-700'}
+                                `}
+                            >
+                                <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
+                                <span className="truncate">{tab.label}</span>
+                            </button>
                         );
-                    }
-                    
-                    return (
-                        <button
-                            key={tab.id}
-                            onClick={() => handleStaticClick(tab)}
-                            className={`w-full text-left p-3 rounded-lg flex items-center transition-colors duration-150
-                                ${activeTabId === tab.id ? 'bg-green-100 text-green-700 font-semibold shadow-sm' : 'hover:bg-gray-50 text-gray-700'}
-                            `}
-                        >
-                            <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
-                            <span className="truncate">{tab.label}</span>
-                        </button>
-                    );
-                })}
-            </nav>
+                    })}
+                </nav>
+              </>
+            )}
         </div>
 
         {/* 右侧内容区域 (Tabbed Content) */}

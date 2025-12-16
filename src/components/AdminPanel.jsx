@@ -8,11 +8,13 @@ import ArchivedDocumentsPanel from './ArchivedDocumentsPanel';
 import ArchiveManagerPanel from './ArchiveManagerPanel';
 import ViewMyAssetsPanelReadOnly from './ViewMyAssetsPanelReadOnly';
 import { ChevronDown } from 'lucide-react';
+import SubAccountPanel from './SubAccountPanel';
 
 export default function AdminPanel({ user, getCollectionHook }) {
   const isCompanyAsset = user.role === 'company_asset';
   const isBaseManager = user.role === 'base_manager';
   const isCompanyFinance = user.role === 'company_finance';
+  // 基地负责人、资产员、财务在“未归档文档”中使用左侧“数据与文件”树形导航
   const useUnarchivedDocsView = isBaseManager || isCompanyAsset || isCompanyFinance;
   
   // 所有 hooks 必须在组件顶部无条件调用
@@ -23,6 +25,10 @@ export default function AdminPanel({ user, getCollectionHook }) {
   const tabs = useMemo(() => {
     const baseTabs = [
       { id: 'viewAssets', label: useUnarchivedDocsView ? '未归档文档' : '登记表格', icon: Box },
+      // 公司资产员 / 公司财务：在顶部 Tab 增加“登记表格录入”
+      ...(isCompanyAsset || isCompanyFinance
+        ? [{ id: 'registerForms', label: '登记表格录入', icon: Database }]
+        : []),
       { id: 'archives', label: '已归档文档', icon: Archive },
       { id: 'reports', label: '统计报表', icon: BarChart3 },
       { id: 'uploadFile', label: '管理文件', icon: UploadCloud },
@@ -33,7 +39,7 @@ export default function AdminPanel({ user, getCollectionHook }) {
     }
 
     return baseTabs;
-  }, [isCompanyAsset, useUnarchivedDocsView]);
+  }, [isCompanyAsset, isCompanyFinance, useUnarchivedDocsView]);
 
   const [activeTab, setActiveTab] = useState(tabs[0]?.id);
 
@@ -88,6 +94,14 @@ export default function AdminPanel({ user, getCollectionHook }) {
           ) : (
           <ViewAllAssetsPanel user={user} getCollectionHook={getCollectionHook} />
           )
+        )}
+
+        {activeTab === 'registerForms' && (isCompanyAsset || isCompanyFinance) && (
+          <SubAccountPanel 
+            user={user} 
+            getCollectionHook={getCollectionHook} 
+            hideDataFilesSidebar={true} 
+          />
         )}
 
         {activeTab === 'reports' && (

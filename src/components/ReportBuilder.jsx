@@ -600,11 +600,19 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
     // 更新字段的数字格式
     const updateFieldDecimalPlaces = (formId, fieldId, decimalPlaces) => {
-        setSelectedFields(prev => prev.map(f => 
-            f.formId === formId && f.fieldId === fieldId 
-                ? { ...f, decimalPlaces: decimalPlaces !== '' ? parseInt(decimalPlaces) || undefined : undefined }
-                : f
-        ));
+        setSelectedFields(prev => prev.map(f => {
+            if (f.formId === formId && f.fieldId === fieldId) {
+                let parsed;
+                if (decimalPlaces === '') {
+                    parsed = undefined;
+                } else {
+                    const n = parseInt(decimalPlaces, 10);
+                    parsed = Number.isNaN(n) ? undefined : n; // 允许 0
+                }
+                return { ...f, decimalPlaces: parsed };
+            }
+            return f;
+        }));
     };
 
     // 更新字段顺序
@@ -689,20 +697,36 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
 
     // 更新聚合函数的数字格式
     const updateAggregationDecimalPlaces = (id, decimalPlaces) => {
-        setAggregations(prev => prev.map(agg =>
-            agg.id === id 
-                ? { ...agg, decimalPlaces: decimalPlaces !== '' ? parseInt(decimalPlaces) || undefined : undefined }
-                : agg
-        ));
+        setAggregations(prev => prev.map(agg => {
+            if (agg.id === id) {
+                let parsed;
+                if (decimalPlaces === '') {
+                    parsed = undefined;
+                } else {
+                    const n = parseInt(decimalPlaces, 10);
+                    parsed = Number.isNaN(n) ? undefined : n; // 允许 0
+                }
+                return { ...agg, decimalPlaces: parsed };
+            }
+            return agg;
+        }));
     };
 
     // 更新计算字段的数字格式
     const updateCalculationDecimalPlaces = (id, decimalPlaces) => {
-        setCalculations(prev => prev.map(calc =>
-            calc.id === id 
-                ? { ...calc, decimalPlaces: decimalPlaces !== '' ? parseInt(decimalPlaces) || undefined : undefined }
-                : calc
-        ));
+        setCalculations(prev => prev.map(calc => {
+            if (calc.id === id) {
+                let parsed;
+                if (decimalPlaces === '') {
+                    parsed = undefined;
+                } else {
+                    const n = parseInt(decimalPlaces, 10);
+                    parsed = Number.isNaN(n) ? undefined : n; // 允许 0
+                }
+                return { ...calc, decimalPlaces: parsed };
+            }
+            return calc;
+        }));
     };
 
     // 删除聚合函数
