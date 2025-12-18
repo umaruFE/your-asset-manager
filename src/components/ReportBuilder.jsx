@@ -305,7 +305,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         return columns;
     }, [selectedFields, aggregations, calculations]);
 
-    // 获取聚合函数后缀的中文映射
+    // 获取聚合函数后缀的中文映射（放在所有使用它的 useMemo 之前，避免初始化顺序问题）
     const getAggregationSuffix = (func) => {
         const funcUpper = func?.toUpperCase();
         const suffixMap = {
@@ -317,6 +317,70 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
         };
         return suffixMap[funcUpper] || funcUpper || '';
     };
+
+    // 聚合字段名归一化：去掉括号中的单位等，例如 "应核减价值（元）" -> "应核减价值"
+    const normalizeAggFieldName = (name) => {
+        if (!name) return '';
+        return String(name).replace(/[（(][^）)]*[）)]/g, '');
+    };
+
+    // 预览执行结果时，基于聚合配置的 show 字段隐藏对应聚合列
+    const previewVisibleKeys = useMemo(() => {
+        if (!executionResult?.data || executionResult.data.length === 0) return [];
+        const allKeys = Object.keys(executionResult.data[0] || {});
+        if (!aggregations || aggregations.length === 0) return allKeys;
+
+        const hiddenAggs = aggregations
+            .filter(a => {
+                if (!a) return false;
+                const show = a.show;
+                // 兼容旧数据：show 可能是 false、'false'、0、'0'
+                return show === false || show === 'false' || show === 0 || show === '0';
+            })
+            .map(a => {
+                const rawName = a.fieldName || a.fieldId || '';
+                return {
+                    fieldName: rawName,
+                    normName: normalizeAggFieldName(rawName),
+                    suffix: getAggregationSuffix(a.function || 'SUM')
+                };
+            });
+
+        if (hiddenAggs.length === 0) return allKeys;
+
+        const hiddenSet = new Set();
+
+        hiddenAggs.forEach(agg => {
+            const targetSuffix = `_${agg.suffix}`;
+            allKeys.forEach(key => {
+                // 1) 正常情况：列名以 _suffix 结尾（例如 "_求和"、"_平均值"）
+                if (key.endsWith(targetSuffix)) {
+                    const base = key.slice(0, key.length - targetSuffix.length); // 形如 "表单名_字段名（元）"
+                    const normBase = normalizeAggFieldName(base);
+                    if (normBase.endsWith(agg.normName)) {
+                        hiddenSet.add(key);
+                        return;
+                    }
+                }
+
+                // 2) 兼容特殊情况：列名里没有后缀，但以 "_字段名" 结尾
+                const lastUnderscore = key.lastIndexOf('_');
+                if (lastUnderscore !== -1) {
+                    const tail = key.slice(lastUnderscore + 1); // 字段名部分
+                    const normTail = normalizeAggFieldName(tail);
+                    if (normTail === agg.normName) {
+                        hiddenSet.add(key);
+                    }
+                }
+            });
+
+            // 兜底：旧格式（无表单名前缀）
+            hiddenSet.add(`${agg.fieldName}_${agg.suffix}`);
+            hiddenSet.add(`${agg.normName}_${agg.suffix}`);
+        });
+
+        return allKeys.filter(k => !hiddenSet.has(k));
+    }, [executionResult, aggregations]);
 
     // 获取所有可排序的列（包括未选中的字段）
     const availableSortColumns = useMemo(() => {
@@ -1754,7 +1818,7 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                         <table className="min-w-full divide-y divide-gray-200">
                             <thead className="bg-gray-100">
                                 <tr>
-                                    {Object.keys(executionResult.data[0] || {}).map(key => (
+                                    {previewVisibleKeys.map(key => (
                                         <th key={key} className="px-4 py-2 text-left text-xs font-medium text-gray-700">
                                             {key}
                                         </th>
@@ -1764,9 +1828,9 @@ export default function ReportBuilder({ user, getCollectionHook, editingReport, 
                             <tbody className="bg-white divide-y divide-gray-200">
                                 {executionResult.data.map((row, idx) => (
                                     <tr key={idx}>
-                                        {Object.values(row).map((value, i) => (
-                                            <td key={i} className="px-4 py-2 text-sm text-gray-900">
-                                                {value}
+                                        {previewVisibleKeys.map(key => (
+                                            <td key={key} className="px-4 py-2 text-sm text-gray-900">
+                                                {row[key]}
                                             </td>
                                         ))}
                                     </tr>

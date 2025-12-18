@@ -206,6 +206,12 @@ export default function ReportsPanel({ user, getCollectionHook }) {
         return map[func?.toUpperCase?.()] || func || '';
     };
 
+    // 归一化聚合字段名：去掉括号中的单位等，例如 "应核减价值（元）" -> "应核减价值"
+    const normalizeAggFieldName = (name) => {
+        if (!name) return '';
+        return String(name).replace(/[（(][^）)]*[）)]/g, '');
+    };
+
     // 可选分组字段（来自“选择字段”）
     const availableGroupKeys = useMemo(() => {
         if (!executionResult?.report?.config?.selectedFields) return [];
@@ -303,11 +309,20 @@ export default function ReportsPanel({ user, getCollectionHook }) {
             // 后端聚合列名格式：formName_fieldName_suffix，需匹配实际返回列名
             const aggConfig = fullReport?.config?.aggregations || [];
             const hiddenAggs = aggConfig
-                .filter(a => a?.show === false)
-                .map(a => ({
-                    fieldName: a.fieldName || a.fieldId,
-                    suffix: getAggregationSuffix(a.function || 'SUM')
-                }));
+                .filter(a => {
+                    if (!a) return false;
+                    const show = a.show;
+                    // 兼容旧数据：show 可能是 false、'false'、0、'0'
+                    return show === false || show === 'false' || show === 0 || show === '0';
+                })
+                .map(a => {
+                    const rawName = a.fieldName || a.fieldId || '';
+                    return {
+                        fieldName: rawName,
+                        normName: normalizeAggFieldName(rawName),
+                        suffix: getAggregationSuffix(a.function || 'SUM')
+                    };
+                });
 
             const dataKeys = Object.keys((result?.data && result.data[0]) || {});
             const hiddenSet = new Set();
@@ -315,16 +330,31 @@ export default function ReportsPanel({ user, getCollectionHook }) {
             hiddenAggs.forEach(agg => {
                 const targetSuffix = `_${agg.suffix}`;
                 dataKeys.forEach(key => {
+                    // 1) 正常情况：列名以 _suffix 结尾（例如 "_求和"、"_平均值"）
                     if (key.endsWith(targetSuffix)) {
-                        // 兼容：前缀可能包含表单名，匹配包含字段名即可
-                        const maybeFieldName = key.slice(0, key.length - targetSuffix.length);
-                        if (maybeFieldName.includes(agg.fieldName)) {
+                        const base = key.slice(0, key.length - targetSuffix.length); // 形如 "表单名_字段名（元）"
+                        const normBase = normalizeAggFieldName(base);
+                        if (normBase.endsWith(agg.normName)) {
+                            hiddenSet.add(key);
+                            return;
+                        }
+                    }
+
+                    // 2) 兼容特殊情况：列名里没有后缀，但以 "_字段名" 结尾
+                    //   例如："资产员财务员期末盘点核减登记表_应核减价值"
+                    const lastUnderscore = key.lastIndexOf('_');
+                    if (lastUnderscore !== -1) {
+                        const tail = key.slice(lastUnderscore + 1); // 字段名部分
+                        const normTail = normalizeAggFieldName(tail);
+                        if (normTail === agg.normName) {
                             hiddenSet.add(key);
                         }
                     }
                 });
+
                 // 兜底：旧格式（无表单名前缀）
                 hiddenSet.add(`${agg.fieldName}_${agg.suffix}`);
+                hiddenSet.add(`${agg.normName}_${agg.suffix}`);
             });
 
             setHiddenColumns(Array.from(hiddenSet));
