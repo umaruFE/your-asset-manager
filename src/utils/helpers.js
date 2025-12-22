@@ -274,9 +274,15 @@ export function validateFormData(data, requiredFields = []) {
   const errors = [];
   
   // 检查必填字段
+  // requiredFields 支持两种形式：
+  // - 字符串数组：['fieldId1', 'fieldId2']
+  // - 对象数组：[{ id: 'fieldId', name: '字段名称' }, ...]
   requiredFields.forEach(field => {
-    if (!data[field] || data[field].toString().trim() === '') {
-      errors.push(`${field} 是必填字段`);
+    const fieldId = typeof field === 'string' ? field : (field?.id || '');
+    const displayName = typeof field === 'string' ? field : (field?.name || fieldId);
+    const value = data[fieldId];
+    if (value === undefined || value === null || (typeof value === 'string' && value.toString().trim() === '')) {
+      errors.push(`${displayName} 是必填字段`);
     }
   });
   

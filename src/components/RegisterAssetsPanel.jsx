@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { Button, LoadingScreen, Plus, Trash2, Check, Download } from '../utils/UI';
-import { generateId, calculateFormula, formatFieldValue, getStepFromPrecision } from '../utils/helpers';
+import { generateId, calculateFormula, formatFieldValue, getStepFromPrecision, validateFormData } from '../utils/helpers';
 import { formsAPI } from '../utils/api';
 import AssetCard, { ViewAssetDetailModal } from './AssetCard';
 
@@ -30,6 +30,26 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
 
   const buildInitialRow = useCallback(() => {
     return activeFields.reduce((acc, field) => {
+      // 自动填充所属基地字段：仅当当前用户为基地经手人或基地负责人时自动填充
+      const isBaseField = /基地/.test(String(field.name || ''));
+      const shouldAutoFillBase = user?.role === 'base_handler' || user?.role === 'base_manager';
+      if (isBaseField && shouldAutoFillBase) {
+        // 优先使用用户的 base_name 或 baseName，再回退到选项第一个
+        const baseCandidate = user?.base_name || user?.baseName || '';
+        if (field.type === 'select') {
+          const options = Array.isArray(field.options) ? field.options : [];
+          if (baseCandidate && options.includes(baseCandidate)) {
+            acc[field.id] = baseCandidate;
+            return acc;
+          }
+          acc[field.id] = options.length > 0 ? options[0] : (baseCandidate || '');
+          return acc;
+        } else {
+          acc[field.id] = baseCandidate || '';
+          return acc;
+        }
+      }
+
       if (field.type === 'number' || field.type === 'formula') {
         acc[field.id] = 0;
       } else if (field.type === 'select') {
@@ -39,7 +59,7 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
       }
       return acc;
     }, {});
-  }, [activeFields]);
+  }, [activeFields, user]);
 
   // 辅助函数：根据当前行数据计算所有公式字段的值
   const calculateRow = useCallback((currentRow) => {
@@ -145,6 +165,18 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
       return;
     }
     
+    // 校验必填字段（传入 id + name，以便错误消息显示字段名称）
+    const requiredFields = activeFields.filter(f => f.required).map(f => ({ id: f.id, name: f.name }));
+    if (requiredFields.length > 0) {
+      for (const r of nonEmptyRows) {
+        const errors = validateFormData(r, requiredFields);
+        if (errors && errors.length > 0) {
+          setError(errors[0]);
+          setIsSubmitting(false);
+          return;
+        }
+      }
+    }
     try {
         const newAssetBatch = {
             id: generateId(),
@@ -176,6 +208,8 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
   const renderFieldInput = (field, rowIndex, row) => {
     const baseClass = "mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
     const currentValue = row[field.id] ?? (field.type === 'number' ? 0 : '');
+    const isBaseField = /基地/.test(String(field.name || ''));
+    const userBaseValue = user?.base_name || user?.baseName || '';
 
     if (field.type === 'formula') {
         // 如果计算结果是错误字符串，显示0
@@ -204,6 +238,19 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
         const options = Array.isArray(field.options) ? field.options : [];
         if (options.length === 0) {
             return <div className="text-xs text-red-500">请先在字段设置中为该下拉字段配置选项</div>;
+        }
+        // 基地字段：仅当用户为基地经手人或基地负责人时自动填充并禁用选择，避免误录入
+        const shouldAutoFillBase = user?.role === 'base_handler' || user?.role === 'base_manager';
+        if (isBaseField && shouldAutoFillBase) {
+            const valueToShow = currentValue || (options.includes(userBaseValue) ? userBaseValue : (options[0] || userBaseValue));
+            return (
+                <input
+                    type="text"
+                    value={valueToShow}
+                    readOnly
+                    className={`${baseClass} bg-gray-50 cursor-not-allowed`}
+                />
+            );
         }
         return (
             <select
@@ -246,13 +293,22 @@ export default function RegisterAssetsPanel({ user, form, getCollectionHook, onA
     }
 
     return (
-        <input
-            type="text"
-            value={currentValue}
-            onChange={(e) => handleFieldChange(field, rowIndex, e.target.value)}
-            className={baseClass}
-            placeholder={`请输入${field.name}`}
-        />
+        isBaseField ? (
+            <input
+                type="text"
+                value={currentValue || userBaseValue || ''}
+                readOnly
+                className={`${baseClass} bg-gray-50 cursor-not-allowed`}
+            />
+        ) : (
+            <input
+                type="text"
+                value={currentValue}
+                onChange={(e) => handleFieldChange(field, rowIndex, e.target.value)}
+                className={baseClass}
+                placeholder={`请输入${field.name}`}
+            />
+        )
     );
   };
 

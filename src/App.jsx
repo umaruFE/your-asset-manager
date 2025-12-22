@@ -12,17 +12,24 @@ function App() {
     const [currentUser, setCurrentUser] = useState(null);
     const [isInitialized, setIsInitialized] = useState(false);
 
-    // 检查token并验证用户
+    // 检查token并验证用户（并获取完整用户信息）
     useEffect(() => {
         async function checkAuth() {
             try {
                 const { getToken } = await import('./utils/api');
                 const token = getToken();
                 if (token) {
-                    const { authAPI } = await import('./utils/api');
+                    const { authAPI, usersAPI } = await import('./utils/api');
                     const response = await authAPI.verify();
-                    if (response.valid && response.user) {
-                        setCurrentUser(response.user);
+                    if (response.valid) {
+                        // 尝试获取更完整的用户信息（包含 base）
+                        try {
+                            const me = await usersAPI.getMe();
+                            setCurrentUser(me);
+                        } catch (err) {
+                            // 回退到 verify 返回的简短用户信息
+                            if (response.user) setCurrentUser(response.user);
+                        }
                     }
                 }
             } catch (error) {
@@ -38,7 +45,15 @@ function App() {
 
     // Handle login
     const handleLogin = async (user) => {
-        setCurrentUser(user);
+        // 登录后 authAPI.login 已设置 token，立即请求完整用户信息
+        try {
+            const { usersAPI } = await import('./utils/api');
+            const me = await usersAPI.getMe();
+            setCurrentUser(me);
+        } catch (err) {
+            // 回退到传入的简短 user 信息
+            setCurrentUser(user);
+        }
     };
 
     // Handle logout

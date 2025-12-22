@@ -106,6 +106,7 @@ router.get('/', authenticateToken, async (req, res, next) => {
                 : 'SELECT * FROM form_fields WHERE form_id = $1 AND active = true ORDER BY "order" ASC';
 
             const fieldsResult = await pool.query(fieldsQuery, [form.id]);
+            // 新 migration 后，required 为独立列，直接使用数据库返回的值
             form.fields = fieldsResult.rows;
         }
 
@@ -309,9 +310,12 @@ router.post('/:formId/fields', authenticateToken, requireRole('superadmin'), asy
             ? options.map((opt) => (typeof opt === 'string' ? opt.trim() : String(opt))).filter(Boolean)
             : null;
 
+        // Insert with explicit required column (migration adds this column)
+        const requiredFlag = typeof req.body.required !== 'undefined' ? !!req.body.required : false;
+
         await pool.query(
-            'INSERT INTO form_fields (id, form_id, field_key, name, type, display_precision, active, "order", formula, options) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
-            [id, req.params.formId, fieldKey, name, type, precision, active, resolvedOrder + 1, formula || null, normalizedOptions ? JSON.stringify(normalizedOptions) : null]
+            'INSERT INTO form_fields (id, form_id, field_key, name, type, display_precision, active, "order", formula, options, required) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+            [id, req.params.formId, fieldKey, name, type, precision, active, resolvedOrder + 1, formula || null, normalizedOptions ? JSON.stringify(normalizedOptions) : null, requiredFlag]
         );
 
         // 同步更新未归档资产记录：为新字段添加空值
@@ -320,8 +324,9 @@ router.post('/:formId/fields', authenticateToken, requireRole('superadmin'), asy
         }
 
         const result = await pool.query('SELECT * FROM form_fields WHERE id = $1', [id]);
+        const newRow = result.rows[0];
         // 转换字段名从下划线到驼峰
-        res.status(201).json(toCamelCaseObject(result.rows[0]));
+        res.status(201).json(toCamelCaseObject(newRow));
     } catch (error) {
         next(error);
     }
@@ -539,7 +544,7 @@ router.put('/:formId/fields/:fieldId', authenticateToken, requireRole('superadmi
 
         const existingField = existingResult.rows[0];
 
-        const { name, type, active, order, formula, displayPrecision, options } = req.body;
+        const { name, type, active, order, formula, displayPrecision, options, required } = req.body;
 
         if (type === 'select' && (!Array.isArray(options) || options.length === 0)) {
             return res.status(400).json({ error: '下拉字段必须至少包含一个选项' });
@@ -580,6 +585,10 @@ router.put('/:formId/fields/:fieldId', authenticateToken, requireRole('superadmi
                 : null;
             updateFields.push(`options = $${paramIndex++}`);
             updateValues.push(normalizedOptions ? JSON.stringify(normalizedOptions) : null);
+        }
+        if (typeof required !== 'undefined') {
+            updateFields.push(`required = $${paramIndex++}`);
+            updateValues.push(!!required);
         }
 
         if (updateFields.length === 0) {

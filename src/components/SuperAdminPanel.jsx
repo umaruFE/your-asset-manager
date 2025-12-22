@@ -441,6 +441,7 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
     const [newFieldType, setNewFieldType] = useState('text');
     const [newFieldFormula, setNewFieldFormula] = useState('');
     const [newFieldPrecision, setNewFieldPrecision] = useState(2);
+    const [newFieldRequired, setNewFieldRequired] = useState(false);
     const [newFieldOptionsInput, setNewFieldOptionsInput] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [actionError, setActionError] = useState(null);
@@ -521,6 +522,10 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                 }
                 fieldData.options = optionsList;
             }
+            // 必填标记
+            if (newFieldRequired) {
+                fieldData.required = true;
+            }
 
             await formsAPI.addField(form.id, fieldData);
 
@@ -532,6 +537,7 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
             setNewFieldType('text');
             setNewFieldFormula('');
             setNewFieldPrecision(2);
+            setNewFieldRequired(false);
             setNewFieldOptionsInput('');
 
         } catch (err) {
@@ -766,6 +772,11 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
             updates.options = null;
         }
 
+        // 处理必填标记的变更
+        if (typeof values.required !== 'undefined' && values.required !== original.required) {
+            updates.required = !!values.required;
+        }
+
         if (Object.keys(updates).length === 0) {
             setFieldEditor(null);
             return;
@@ -846,6 +857,18 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                                 <option value="formula">公式计算 (Formula)</option>
                                 <option value="select">下拉单选 (Select)</option>
                             </select>
+                        </InputGroup>
+                        <InputGroup label="是否必填" className="w-36">
+                            <div className="flex items-center space-x-2">
+                                <input
+                                    id="newFieldRequired"
+                                    type="checkbox"
+                                    checked={newFieldRequired}
+                                    onChange={(e) => setNewFieldRequired(e.target.checked)}
+                                    className="h-4 w-4"
+                                />
+                                <label htmlFor="newFieldRequired" className="text-sm text-gray-600">必填</label>
+                            </div>
                         </InputGroup>
                     </div>
 
@@ -1001,7 +1024,8 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                                                         type: field.type,
                                                         formula: field.formula || '',
                                                         displayPrecision: typeof field.displayPrecision === 'number' ? field.displayPrecision : 2,
-                                                        optionsText: Array.isArray(field.options) ? field.options.join('\n') : ''
+                                                        optionsText: Array.isArray(field.options) ? field.options.join('\n') : '',
+                                                        required: !!field.required
                                                     }
                                                 })}
                                             >
@@ -1056,7 +1080,7 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                     onClose={() => setFieldEditor(null)}
                     title={`编辑字段：${fieldEditor.original.name}`}
                 >
-                    <div className="space-y-4">
+                <div className="space-y-4">
                         <InputGroup label="字段名称">
                             <input
                                 type="text"
@@ -1114,6 +1138,17 @@ function ManageFormFieldsPanel({ form: initialForm, forms, updateForms, onClose 
                                 />
                             </InputGroup>
                         )}
+                        <InputGroup label="是否必填">
+                            <div className="flex items-center space-x-2">
+                                <input
+                                    type="checkbox"
+                                    checked={!!fieldEditor.values.required}
+                                    onChange={(e) => handleFieldEditorChange('required', e.target.checked)}
+                                    className="h-4 w-4"
+                                />
+                                <span className="text-sm text-gray-600">必填</span>
+                            </div>
+                        </InputGroup>
                         <div className="flex justify-end space-x-3">
                             <Button variant="outline" onClick={() => setFieldEditor(null)}>取消</Button>
                             <Button variant="primary" onClick={handleFieldEditorSave}>保存</Button>

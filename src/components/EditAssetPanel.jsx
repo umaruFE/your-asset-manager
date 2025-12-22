@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { Button, Modal, Plus, Trash2, Check, X } from '../utils/UI';
-import { generateId, calculateFormula, formatFieldValue, getStepFromPrecision } from '../utils/helpers';
+import { generateId, calculateFormula, formatFieldValue, getStepFromPrecision, validateFormData } from '../utils/helpers';
 import { assetsAPI } from '../utils/api';
 
 export default function EditAssetPanel({ user, asset, form, getCollectionHook, onSave, onCancel }) {
@@ -66,6 +66,23 @@ export default function EditAssetPanel({ user, asset, form, getCollectionHook, o
 
   const buildInitialRow = useCallback(() => {
     return activeFields.reduce((acc, field) => {
+      const isBaseField = /基地/.test(String(field.name || ''));
+      const shouldAutoFillBase = user?.role === 'base_handler' || user?.role === 'base_manager';
+      const userBaseValue = user?.base_name || user?.baseName || '';
+      if (isBaseField && shouldAutoFillBase) {
+        if (field.type === 'select') {
+          const options = Array.isArray(field.options) ? field.options : [];
+          if (userBaseValue && options.includes(userBaseValue)) {
+            acc[field.id] = userBaseValue;
+          } else {
+            acc[field.id] = options.length > 0 ? options[0] : (userBaseValue || '');
+          }
+        } else {
+          acc[field.id] = userBaseValue || '';
+        }
+        return acc;
+      }
+
       if (field.type === 'number' || field.type === 'formula') {
         acc[field.id] = 0;
       } else if (field.type === 'select') {
@@ -123,6 +140,19 @@ export default function EditAssetPanel({ user, asset, form, getCollectionHook, o
       setIsSaving(false);
       return;
     }
+  
+  // 校验必填字段（传入 id + name，以便错误消息显示字段名称）
+  const requiredFields = activeFields.filter(f => f.required).map(f => ({ id: f.id, name: f.name }));
+  if (requiredFields.length > 0) {
+    for (const r of nonEmptyRows) {
+      const errors = validateFormData(r, requiredFields);
+      if (errors && errors.length > 0) {
+        setError(errors[0]);
+        setIsSaving(false);
+        return;
+      }
+    }
+  }
     
     try {
         // 使用当前表单的最新字段快照
@@ -152,6 +182,9 @@ export default function EditAssetPanel({ user, asset, form, getCollectionHook, o
   const renderFieldInput = (field, rowIndex, row) => {
     const baseClass = "mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
     const currentValue = row[field.id] ?? (field.type === 'number' ? 0 : '');
+    const isBaseField = /基地/.test(String(field.name || ''));
+    const shouldAutoFillBase = user?.role === 'base_handler' || user?.role === 'base_manager';
+    const userBaseValue = user?.base_name || user?.baseName || '';
 
     if (field.type === 'formula') {
         const displayValue = formatFieldValue(field, currentValue);
@@ -178,6 +211,17 @@ export default function EditAssetPanel({ user, asset, form, getCollectionHook, o
         const options = Array.isArray(field.options) ? field.options : [];
         if (options.length === 0) {
             return <div className="text-xs text-red-500">请先在字段设置中为该下拉字段配置选项</div>;
+        }
+        if (isBaseField && shouldAutoFillBase) {
+            const valueToShow = currentValue || (options.includes(userBaseValue) ? userBaseValue : (options[0] || userBaseValue));
+            return (
+                <input
+                    type="text"
+                    value={valueToShow}
+                    readOnly
+                    className={`${baseClass} bg-gray-50 cursor-not-allowed`}
+                />
+            );
         }
         return (
             <select
@@ -220,13 +264,22 @@ export default function EditAssetPanel({ user, asset, form, getCollectionHook, o
     }
 
     return (
-        <input
-            type="text"
-            value={currentValue}
-            onChange={(e) => handleFieldChange(field, rowIndex, e.target.value)}
-            className={baseClass}
-            placeholder={`请输入${field.name}`}
-        />
+        isBaseField && shouldAutoFillBase ? (
+            <input
+                type="text"
+                value={currentValue || userBaseValue || ''}
+                readOnly
+                className={`${baseClass} bg-gray-50 cursor-not-allowed`}
+            />
+        ) : (
+            <input
+                type="text"
+                value={currentValue}
+                onChange={(e) => handleFieldChange(field, rowIndex, e.target.value)}
+                className={baseClass}
+                placeholder={`请输入${field.name}`}
+            />
+        )
     );
   };
 
