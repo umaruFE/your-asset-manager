@@ -106,10 +106,25 @@ const storage = multer.diskStorage({
     }
 });
 
-const upload = multer({ storage });
+// Limit uploads (default max file size can be overridden with env var MAX_FILE_SIZE in bytes)
+const MAX_FILE_SIZE = process.env.MAX_FILE_SIZE ? Number(process.env.MAX_FILE_SIZE) : 50 * 1024 * 1024; // 50MB
+const upload = multer({ storage, limits: { fileSize: MAX_FILE_SIZE } });
 
 // 上传文件（仅资产员和财务员）
-router.post('/', authenticateToken, requireRole('company_asset', 'company_finance'), upload.single('file'), async (req, res, next) => {
+// 上传文件（仅资产员和财务员）
+// Wrap multer to provide clearer error messages for file-size limits
+router.post('/', authenticateToken, requireRole('company_asset', 'company_finance'), (req, res, next) => {
+    upload.single('file')(req, res, (err) => {
+        if (err) {
+            console.error('Upload error:', err);
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(413).json({ error: `文件过大，最大允许 ${(MAX_FILE_SIZE / (1024 * 1024)).toFixed(0)} MB` });
+            }
+            return next(err);
+        }
+        return next();
+    });
+}, async (req, res, next) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: '文件不能为空' });

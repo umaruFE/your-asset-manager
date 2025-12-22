@@ -96,11 +96,14 @@ export default function ManageFilesPanel({ user, getCollectionHook }) {
       }
   };
   
-  // 处理删除
-  const handleDelete = async (fileId) => {
+  // 处理删除（增加确认步骤）
+  const handleDelete = async (file) => {
+    if (!window.confirm(`是否确认删除文件 “${file.file_name || file.fileName}”？该操作不可恢复。`)) {
+      return;
+    }
     try {
-      await filesAPI.delete(fileId);
-      updateFiles(prevFiles => prevFiles.filter(file => file.id !== fileId));
+      await filesAPI.delete(file.id);
+      updateFiles(prevFiles => prevFiles.filter(f => f.id !== file.id));
     } catch (err) {
       alert('删除失败: ' + (err.message || ''));
     }
@@ -393,7 +396,7 @@ export default function ManageFilesPanel({ user, getCollectionHook }) {
                   </div>
                 </div>
                 {canUpload && file.uploaded_by === user.id && (
-                  <Button variant="danger" size="icon" onClick={() => handleDelete(file.id)} className="flex-shrink-0 ml-2">
+                  <Button variant="danger" size="icon" onClick={() => handleDelete(file)} className="flex-shrink-0 ml-2">
                     <Trash2 className="w-4 h-4" />
                   </Button>
                 )}
