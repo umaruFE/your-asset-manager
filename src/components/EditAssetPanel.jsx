@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { Button, Modal, Plus, Trash2, Check, X } from '../utils/UI';
+import { Button, Modal, Plus, Trash2, Check, X, useToast } from '../utils/UI';
 import { generateId, calculateFormula, formatFieldValue, getStepFromPrecision, validateFormData } from '../utils/helpers';
 import { assetsAPI } from '../utils/api';
 
@@ -7,6 +7,7 @@ export default function EditAssetPanel({ user, asset, form, getCollectionHook, o
   const { data: allForms } = getCollectionHook('forms');
   const { data: allAssets } = getCollectionHook('assets');
   const { update: updateAssets } = getCollectionHook('assets');
+  const { showToast } = useToast();
 
   // 初始化行数据（从asset的batchData加载）
   const [rows, setRows] = useState([]);
@@ -170,7 +171,12 @@ export default function EditAssetPanel({ user, asset, form, getCollectionHook, o
             );
         });
 
-        onSave();
+        showToast("保存成功！", "success");
+        
+        // 延迟调用 onSave，以便用户看到成功提示
+        setTimeout(() => {
+            onSave();
+        }, 1000);
     } catch (err) {
       console.error("更新记录失败:", err);
       setError(err.message || "更新失败，请重试。");

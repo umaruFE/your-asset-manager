@@ -1,5 +1,5 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
-import { Button, LoadingScreen, Modal, useModal, Plus, FileText, Database, Box, ChevronLeft, ChevronRight, X, Archive, Edit, Trash2, Check } from '../utils/UI';
+import { Button, LoadingScreen, Modal, useModal, Plus, FileText, Database, Box, ChevronLeft, ChevronRight, X, Archive, Edit, Trash2, Check, useToast } from '../utils/UI';
 import { ChevronDown, Eye, ArrowUp, ArrowDown } from 'lucide-react';
 import RegisterAssetsPanel from './RegisterAssetsPanel';
 import ViewFilesPanel from './ViewFilesPanel';
@@ -882,6 +882,7 @@ function EditRowModal({ row, form, assets, user, getCollectionHook, onSave, onCa
   const { data: allForms } = getCollectionHook('forms');
   const { data: allAssets } = getCollectionHook('assets');
   const { update: updateAssets } = getCollectionHook('assets');
+  const { showToast } = useToast();
   
   const [editingRow, setEditingRow] = useState({ ...row });
   const [isSaving, setIsSaving] = useState(false);
@@ -960,14 +961,19 @@ function EditRowModal({ row, form, assets, user, getCollectionHook, onSave, onCa
         }
       }
 
-      onSave();
+      showToast("保存成功！", "success");
+      
+      // 延迟调用 onSave，以便用户看到成功提示
+      setTimeout(() => {
+        onSave();
+      }, 1000);
     } catch (err) {
       console.error("保存失败:", err);
       setError(err.message || "保存失败，请重试。");
     } finally {
       setIsSaving(false);
     }
-  }, [editingRow, row, assets, form, onSave]);
+  }, [editingRow, row, assets, form, onSave, showToast]);
 
   const renderFieldInput = (field) => {
     const baseClass = "mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
