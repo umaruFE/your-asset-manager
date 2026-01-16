@@ -14,6 +14,104 @@ const STATIC_TABS = {
     viewFiles: { id: 'viewFiles', label: '查看文件', icon: FileText, type: 'static' },
 };
 
+// 导出 ViewMyAssetsPanel 组件供 AdminPanel 使用
+export function ViewMyAssetsPanel({ user, getCollectionHook, forms, initialFormId = null }) {
+  const { data: assets, loading, error, update: updateAssets } = getCollectionHook('assets');
+  const [selectedFormId, setSelectedFormId] = useState(initialFormId);
+
+  // 只显示未归档的表格（archiveStatus === 'active'）
+  const unarchivedForms = useMemo(() => {
+    return forms.filter(f => f.archiveStatus === 'active' && f.isActive)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [forms]);
+
+  // 获取选中表格的所有未归档数据（合并所有记录）
+  const mergedData = useMemo(() => {
+    if (!selectedFormId) return { form: null, rows: [] };
+    
+    const form = forms.find(f => f.id === selectedFormId);
+    if (!form) return { form: null, rows: [] };
+
+    // 获取该表格的所有未归档资产记录
+    // 基地经手人只看自己的记录，公司资产员和财务看所有符合权限的记录
+    let formAssets;
+    if (user.role === 'base_handler') {
+      // 基地经手人只看自己的记录
+      formAssets = assets
+        .filter(asset => asset.formId === selectedFormId && asset.subAccountId === user.id)
+        .sort((a, b) => a.submittedAt - b.submittedAt);
+    } else {
+      // 公司资产员和财务看所有符合权限的记录（后端已经过滤）
+      formAssets = assets
+        .filter(asset => asset.formId === selectedFormId)
+        .sort((a, b) => a.submittedAt - b.submittedAt);
+    }
+
+    // 合并所有记录的batchData
+    const allRows = [];
+    formAssets.forEach(asset => {
+      if (asset.batchData && Array.isArray(asset.batchData)) {
+        asset.batchData.forEach((row, rowIndex) => {
+          allRows.push({
+            ...row,
+            __assetId: asset.id,
+            __rowIndex: rowIndex,
+            __submittedAt: asset.submittedAt,
+            __subAccountName: asset.subAccountName
+          });
+        });
+      }
+    });
+
+    return { form, rows: allRows, assets: formAssets };
+  }, [selectedFormId, assets, user.id, forms]);
+
+  // 根据传入的initialFormId设置选中的表格
+  useEffect(() => {
+    if (initialFormId !== null && initialFormId !== undefined) {
+      setSelectedFormId(initialFormId);
+    } else if (unarchivedForms.length > 0 && !selectedFormId) {
+      setSelectedFormId(unarchivedForms[0].id);
+    }
+  }, [initialFormId]);
+
+  if (loading) {
+    return <LoadingScreen message="正在加载未归档文档..." />;
+  }
+  if (error) {
+    return <div className="text-red-500">加载记录失败: {error}</div>;
+  }
+  
+  if (unarchivedForms.length === 0) {
+    return (
+      <div>
+        <h2 className="text-2xl font-semibold text-gray-800 mb-6">未归档文档</h2>
+        <p className="text-gray-500">暂无未归档的表格。</p>
+      </div>
+    );
+  }
+
+  return (
+      <div>
+      {selectedFormId && mergedData.form ? (
+        <UnarchivedFormDataView
+          form={mergedData.form}
+          rows={mergedData.rows}
+          assets={mergedData.assets}
+          user={user}
+          getCollectionHook={getCollectionHook}
+          onDataUpdated={() => updateAssets(prev => [...prev])}
+        />
+      ) : (
+        <div className="text-center text-gray-500 pt-20">
+          <h2 className="text-2xl font-semibold text-gray-800 mb-4">未归档文档</h2>
+          <p>请从左侧导航栏选择一个表格查看数据</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SubAccountPanel({ user, getCollectionHook, hideDataFilesSidebar = false }) {
   const { data: forms } = getCollectionHook('forms');
   const tabsContainerRef = useRef(null); // Ref for the scrollable tab area
@@ -400,93 +498,7 @@ function UnarchivedDocsTree({ tab, forms, assets, user, activeTabId, onFormClick
   );
 }
 
-// 1a. 查看未归档文档 (显示未归档表格列表，点击表格显示合并数据)
-function ViewMyAssetsPanel({ user, getCollectionHook, forms, initialFormId = null }) {
-  const { data: assets, loading, error, update: updateAssets } = getCollectionHook('assets');
-  const [selectedFormId, setSelectedFormId] = useState(initialFormId);
 
-  // 只显示未归档的表格（archiveStatus === 'active'）
-  const unarchivedForms = useMemo(() => {
-    return forms.filter(f => f.archiveStatus === 'active' && f.isActive)
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [forms]);
-
-  // 获取选中表格的所有未归档数据（合并所有记录）
-  const mergedData = useMemo(() => {
-    if (!selectedFormId) return { form: null, rows: [] };
-    
-    const form = forms.find(f => f.id === selectedFormId);
-    if (!form) return { form: null, rows: [] };
-
-    // 获取该表格的所有未归档资产记录
-    const formAssets = assets
-      .filter(asset => asset.formId === selectedFormId && asset.subAccountId === user.id)
-      .sort((a, b) => a.submittedAt - b.submittedAt);
-
-    // 合并所有记录的batchData
-    const allRows = [];
-    formAssets.forEach(asset => {
-      if (asset.batchData && Array.isArray(asset.batchData)) {
-        asset.batchData.forEach((row, rowIndex) => {
-          allRows.push({
-            ...row,
-            __assetId: asset.id,
-            __rowIndex: rowIndex,
-            __submittedAt: asset.submittedAt,
-            __subAccountName: asset.subAccountName
-          });
-        });
-      }
-    });
-
-    return { form, rows: allRows, assets: formAssets };
-  }, [selectedFormId, assets, user.id, forms]);
-
-  // 根据传入的initialFormId设置选中的表格
-  useEffect(() => {
-    if (initialFormId !== null && initialFormId !== undefined) {
-      setSelectedFormId(initialFormId);
-    } else if (unarchivedForms.length > 0 && !selectedFormId) {
-      setSelectedFormId(unarchivedForms[0].id);
-    }
-  }, [initialFormId]);
-
-  if (loading) {
-    return <LoadingScreen message="正在加载未归档文档..." />;
-  }
-  if (error) {
-    return <div className="text-red-500">加载记录失败: {error}</div>;
-  }
-  
-  if (unarchivedForms.length === 0) {
-    return (
-      <div>
-        <h2 className="text-2xl font-semibold text-gray-800 mb-6">未归档文档</h2>
-        <p className="text-gray-500">暂无未归档的表格。</p>
-      </div>
-    );
-  }
-
-  return (
-      <div>
-      {selectedFormId && mergedData.form ? (
-        <UnarchivedFormDataView
-          form={mergedData.form}
-          rows={mergedData.rows}
-          assets={mergedData.assets}
-          user={user}
-          getCollectionHook={getCollectionHook}
-          onDataUpdated={() => updateAssets(prev => [...prev])}
-        />
-      ) : (
-        <div className="text-center text-gray-500 pt-20">
-          <h2 className="text-2xl font-semibold text-gray-800 mb-4">未归档文档</h2>
-          <p>请从左侧导航栏选择一个表格查看数据</p>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // 未归档表格数据视图组件（只读模式，通过模态窗编辑）
 function UnarchivedFormDataView({ form, rows, assets, user, getCollectionHook, onDataUpdated }) {
@@ -695,17 +707,18 @@ function UnarchivedFormDataView({ form, rows, assets, user, getCollectionHook, o
       <h3 className="text-xl font-bold text-gray-800 mb-4">{form.name}</h3>
 
       <div className="overflow-x-auto border border-gray-200 rounded-lg" style={{ maxWidth: '100%' }}>
-        <table className="min-w-full divide-y divide-gray-200" style={{ minWidth: '800px' }}>
+        <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
               {activeFields.map(field => (
                 <th 
                   key={field.id} 
                   className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap cursor-pointer hover:bg-gray-100 select-none"
+                  style={{ maxWidth: '150px' }}
                   onClick={() => handleSort(field.id)}
                 >
-                  <div className="flex items-center gap-1">
-                    <span>{field.name}</span>
+                  <div className="flex items-center gap-1 truncate">
+                    <span className="truncate">{field.name}</span>
                     {field.type === 'formula' && (
                       <span className="text-blue-500 text-xs">(自动计算)</span>
                     )}
@@ -728,7 +741,7 @@ function UnarchivedFormDataView({ form, rows, assets, user, getCollectionHook, o
             {displayRows.map((row, rowIndex) => (
               <tr key={rowIndex} className="hover:bg-gray-50">
                 {activeFields.map(field => (
-                  <td key={field.id} className="px-3 py-2 text-sm text-gray-700 whitespace-nowrap">
+                  <td key={field.id} className="px-3 py-2 text-sm text-gray-700" style={{ maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {renderFieldValue(field, row)}
                   </td>
                 ))}

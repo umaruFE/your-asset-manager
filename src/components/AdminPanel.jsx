@@ -8,7 +8,7 @@ import ArchivedDocumentsPanel from './ArchivedDocumentsPanel';
 import ArchiveManagerPanel from './ArchiveManagerPanel';
 import ViewMyAssetsPanelReadOnly from './ViewMyAssetsPanelReadOnly';
 import { ChevronDown } from 'lucide-react';
-import SubAccountPanel from './SubAccountPanel';
+import SubAccountPanel, { ViewMyAssetsPanel } from './SubAccountPanel';
 
 export default function AdminPanel({ user, getCollectionHook }) {
   const isCompanyAsset = user.role === 'company_asset';
@@ -83,12 +83,21 @@ export default function AdminPanel({ user, getCollectionHook }) {
               </div>
 
               {/* 右侧内容区域 */}
-              <div className="flex-1">
-                <ViewMyAssetsPanelReadOnly 
-                  user={user} 
-                  getCollectionHook={getCollectionHook} 
-                  initialFormId={selectedFormId}
-                />
+              <div className="flex-grow overflow-y-auto p-6">
+                {(isCompanyAsset || isCompanyFinance) ? (
+                  <ViewMyAssetsPanel 
+                    user={user} 
+                    getCollectionHook={getCollectionHook} 
+                    forms={forms}
+                    initialFormId={selectedFormId}
+                  />
+                ) : (
+                  <ViewMyAssetsPanelReadOnly 
+                    user={user} 
+                    getCollectionHook={getCollectionHook} 
+                    initialFormId={selectedFormId}
+                  />
+                )}
               </div>
             </div>
           ) : (

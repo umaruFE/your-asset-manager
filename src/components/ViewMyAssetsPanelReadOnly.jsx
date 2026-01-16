@@ -316,17 +316,18 @@ function UnarchivedFormDataViewReadOnly({ form, rows, assets, user, getCollectio
       )}
 
       <div className="overflow-x-auto border border-gray-200 rounded-lg" style={{ maxWidth: '100%' }}>
-        <table className="min-w-full divide-y divide-gray-200" style={{ minWidth: '800px' }}>
+        <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
               {activeFields.map(field => (
                 <th 
                   key={field.id} 
                   className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap cursor-pointer hover:bg-gray-100 select-none"
+                  style={{ maxWidth: '150px' }}
                   onClick={() => handleSort(field.id)}
                 >
-                  <div className="flex items-center gap-1">
-                    <span>{field.name}</span>
+                  <div className="flex items-center gap-1 truncate">
+                    <span className="truncate">{field.name}</span>
                     {field.type === 'formula' && (
                       <span className="text-blue-500 text-xs">(自动计算)</span>
                     )}
@@ -349,7 +350,7 @@ function UnarchivedFormDataViewReadOnly({ form, rows, assets, user, getCollectio
             {displayRows.map((row, rowIndex) => (
               <tr key={rowIndex} className="hover:bg-gray-50">
                 {activeFields.map(field => (
-                  <td key={field.id} className="px-3 py-2 text-sm text-gray-700 whitespace-nowrap">
+                  <td key={field.id} className="px-3 py-2 text-sm text-gray-700" style={{ maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {renderFieldValue(field, row)}
                   </td>
                 ))}
