@@ -404,14 +404,14 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 // 使用表单名+字段名确保列名唯一性，避免不同表单的同名字段产生冲突
                 const uniqueColName = `${formName}_${fieldName}_${suffix}`;
 
-                // 使用 CASE WHEN 确保只聚合该表单的数据
-                if (func === 'COUNT') {
-                    // COUNT可以用于任何类型
-                    const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') ELSE NULL END)`;
-                    selectClauses.push(`${aggExpression} as "${uniqueColName}"`);
-                } else {
-                    // 其他聚合函数需要数字类型
-                    const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
+                    // 使用 CASE WHEN 确保只聚合该表单的数据
+                    if (func === 'COUNT') {
+                        // COUNT可以用于任何类型
+                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${fieldName}') ELSE NULL END)`;
+                        selectClauses.push(`${aggExpression} as "${uniqueColName}"`);
+                    } else {
+                        // 其他聚合函数需要数字类型
+                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
                     // 应用数字格式（如果设置了 decimalPlaces）
                     const decimalPlaces = agg.decimalPlaces !== undefined ? parseInt(agg.decimalPlaces) : 2;
                     // 对于"数量（尾）"这样的字段，SUM结果应该是整数，需要四舍五入
@@ -465,9 +465,9 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                         // 否则是普通字段，转换为JSONB路径
                         const fieldName = fieldNameMap[match] || match;
                         if (hasAggregations) {
-                            return `CAST(COALESCE(batch_row->>'${match}', batch_row->>'${fieldName}') AS NUMERIC)`;
+                            return `CAST(COALESCE(NULLIF(batch_row->>'${match}', ''), batch_row->>'${fieldName}') AS NUMERIC)`;
                         } else {
-                            return `CAST(COALESCE(batch_data->0->>'${match}', batch_data->0->>'${fieldName}') AS NUMERIC)`;
+                            return `CAST(COALESCE(NULLIF(batch_data->0->>'${match}', ''), batch_data->0->>'${fieldName}') AS NUMERIC)`;
                         }
                     });
                     // 应用数字格式（如果设置了 decimalPlaces）
@@ -532,10 +532,10 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     // 关键修复：对于跨表单聚合，需要确保每个聚合字段只从它所属的表单中聚合数据
                     // 使用 CASE WHEN 确保只聚合该表单的数据，这样即使其他表单没有该字段，也不会影响聚合结果
                     if (func === 'COUNT') {
-                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') ELSE NULL END)`;
+                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${fieldName}') ELSE NULL END)`;
                         innerSelectClauses.push(`${aggExpression} as "${uniqueColName}"`);
                     } else {
-                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
+                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
                         // 应用数字格式（如果设置了 decimalPlaces）
                         const decimalPlaces = agg.decimalPlaces !== undefined ? parseInt(agg.decimalPlaces) : 2;
                         // 对于"数量（尾）"这样的字段，SUM结果应该是整数，需要四舍五入
@@ -601,7 +601,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                             const formName = formNameMap[foundFormId] || foundFormId;
                             const suffix = getAggregationSuffix('AVG');
                             const uniqueColName = `${formName}_${foundFieldName}_${suffix}`;
-                            const aggExpression = `AVG(CASE WHEN assets.form_id = '${foundFormId}' THEN CAST(COALESCE(batch_row->>'${fieldId}', batch_row->>'${foundFieldName}') AS NUMERIC) ELSE NULL END)`;
+                            const aggExpression = `AVG(CASE WHEN assets.form_id = '${foundFormId}' THEN CAST(COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${foundFieldName}') AS NUMERIC) ELSE NULL END)`;
                             // 自动添加的聚合字段使用默认2位小数
                             const decimalPlaces = 2;
                             const finalExpression = `ROUND(COALESCE(${aggExpression}, 0)::numeric, ${decimalPlaces})`;
@@ -673,7 +673,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     const fieldName = field.fieldName || field.fieldId;
                     // 使用双引号包裹列名，确保特殊字符正确处理
                     const escapedFieldName = fieldName.replace(/"/g, '""'); // 转义双引号
-                    outerSelectClauses.push(`subq."${escapedFieldName}"`);
+                    outerSelectClauses.push(`"inner_subq"."${escapedFieldName}"`);
                 }
             }
 
@@ -688,7 +688,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     // 使用表单名+字段名确保列名唯一性
                     const aggColName = `${formName}_${fieldName}_${suffix}`;
                     const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
-                    outerSelectClauses.push(`subq."${escapedColName}"`);
+                    outerSelectClauses.push(`"inner_subq"."${escapedColName}"`);
                 }
             }
 
@@ -707,12 +707,12 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                         if (aggregationColumnMap[match]) {
                             const aggColName = aggregationColumnMap[match].replace(/"/g, ''); // 移除引号
                             const escapedColName = aggColName.replace(/"/g, '""'); // 转义双引号
-                            return `COALESCE(subq."${escapedColName}", 0)`;
+                            return `COALESCE("inner_subq"."${escapedColName}", 0)`;
                         }
                         // 否则使用普通字段名，并用 COALESCE 处理 NULL
                         const fieldName = fieldNameMap[match] || match;
                         const escapedFieldName = fieldName.replace(/"/g, '""'); // 转义双引号
-                        return `COALESCE(subq."${escapedFieldName}", 0)`;
+                        return `COALESCE("inner_subq"."${escapedFieldName}", 0)`;
                     });
                     const escapedCalcName = calc.name.replace(/"/g, '""'); // 转义双引号
                     // 应用数字格式（如果设置了 decimalPlaces）
@@ -722,7 +722,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 }
             }
 
-            query = `SELECT ${outerSelectClauses.join(', ')} FROM (${innerQuery}) as subq`;
+            query = `SELECT ${outerSelectClauses.join(', ')} FROM (${innerQuery}) as "inner_subq"`;
         } else if (hasAggregations) {
             // 有聚合函数但没有计算字段，直接使用聚合查询
             query = `SELECT ${selectClauses.join(', ')} FROM assets CROSS JOIN LATERAL jsonb_array_elements(assets.batch_data) as batch_row INNER JOIN forms ON assets.form_id = forms.id WHERE 1=1 AND forms.archive_status = 'active'`;
