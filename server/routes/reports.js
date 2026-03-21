@@ -369,8 +369,8 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
 
                 if (hasAggregations) {
                     // 如果有聚合函数，从batch_row中提取（用于GROUP BY）
-                    // 尝试字段ID，如果不存在则尝试字段名称
-                    selectClauses.push(`COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') as "${fieldName}"`);
+                    // 尝试字段ID，如果不存在则尝试字段名称，并使用TRIM去除空格
+                    selectClauses.push(`TRIM(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')) as "${fieldName}"`);
                 } else {
                     // 没有聚合函数，从batch_data中提取
                     // 尝试字段ID，如果不存在则尝试字段名称
@@ -404,14 +404,14 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                 // 使用表单名+字段名确保列名唯一性，避免不同表单的同名字段产生冲突
                 const uniqueColName = `${formName}_${fieldName}_${suffix}`;
 
-                    // 使用 CASE WHEN 确保只聚合该表单的数据
-                    if (func === 'COUNT') {
-                        // COUNT可以用于任何类型
-                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${fieldName}') ELSE NULL END)`;
-                        selectClauses.push(`${aggExpression} as "${uniqueColName}"`);
-                    } else {
-                        // 其他聚合函数需要数字类型
-                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
+                // 使用 CASE WHEN 确保只聚合该表单的数据
+                if (func === 'COUNT') {
+                    // COUNT可以用于任何类型，使用TRIM去除空格
+                    const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(NULLIF(batch_row->>'${fieldId}', ''), TRIM(batch_row->>'${fieldName}')) ELSE NULL END)`;
+                    selectClauses.push(`${aggExpression} as "${uniqueColName}"`);
+                } else {
+                    // 其他聚合函数需要数字类型
+                    const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(NULLIF(batch_row->>'${fieldId}', ''), TRIM(batch_row->>'${fieldName}')) AS NUMERIC) ELSE NULL END)`;
                     // 应用数字格式（如果设置了 decimalPlaces）
                     const decimalPlaces = agg.decimalPlaces !== undefined ? parseInt(agg.decimalPlaces) : 2;
                     // 对于"数量（尾）"这样的字段，SUM结果应该是整数，需要四舍五入
@@ -465,9 +465,9 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                         // 否则是普通字段，转换为JSONB路径
                         const fieldName = fieldNameMap[match] || match;
                         if (hasAggregations) {
-                            return `CAST(COALESCE(NULLIF(batch_row->>'${match}', ''), batch_row->>'${fieldName}') AS NUMERIC)`;
+                            return `CAST(COALESCE(NULLIF(batch_row->>'${match}', ''), TRIM(batch_row->>'${fieldName}')) AS NUMERIC)`;
                         } else {
-                            return `CAST(COALESCE(NULLIF(batch_data->0->>'${match}', ''), batch_data->0->>'${fieldName}') AS NUMERIC)`;
+                            return `CAST(COALESCE(NULLIF(batch_data->0->>'${match}', ''), TRIM(batch_data->0->>'${fieldName}')) AS NUMERIC)`;
                         }
                     });
                     // 应用数字格式（如果设置了 decimalPlaces）
@@ -505,13 +505,13 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
                     if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
                         const allFieldIds = groupingFieldIdsMap[fieldName];
-                        // 构建COALESCE链，尝试所有可能的字段ID和字段名称
-                        const coalesceChain = allFieldIds.map(id => `batch_row->>'${id}'`).join(', ');
+                        // 构建COALESCE链，尝试所有可能的字段ID和字段名称，并使用TRIM去除空格
+                        const coalesceChain = allFieldIds.map(id => `TRIM(batch_row->>'${id}')`).join(', ');
                         innerSelectClauses.push(`COALESCE(${coalesceChain}) as "${fieldName}"`);
                     } else {
                         // 单表单或未构建映射，使用原来的逻辑
                         const fieldId = field.fieldId;
-                        innerSelectClauses.push(`COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}') as "${fieldName}"`);
+                        innerSelectClauses.push(`TRIM(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')) as "${fieldName}"`);
                     }
                 }
             }
@@ -532,10 +532,10 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                     // 关键修复：对于跨表单聚合，需要确保每个聚合字段只从它所属的表单中聚合数据
                     // 使用 CASE WHEN 确保只聚合该表单的数据，这样即使其他表单没有该字段，也不会影响聚合结果
                     if (func === 'COUNT') {
-                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${fieldName}') ELSE NULL END)`;
+                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN COALESCE(NULLIF(batch_row->>'${fieldId}', ''), TRIM(batch_row->>'${fieldName}')) ELSE NULL END)`;
                         innerSelectClauses.push(`${aggExpression} as "${uniqueColName}"`);
                     } else {
-                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${fieldName}') AS NUMERIC) ELSE NULL END)`;
+                        const aggExpression = `${func}(CASE WHEN assets.form_id = '${agg.formId}' THEN CAST(COALESCE(NULLIF(batch_row->>'${fieldId}', ''), TRIM(batch_row->>'${fieldName}')) AS NUMERIC) ELSE NULL END)`;
                         // 应用数字格式（如果设置了 decimalPlaces）
                         const decimalPlaces = agg.decimalPlaces !== undefined ? parseInt(agg.decimalPlaces) : 2;
                         // 对于"数量（尾）"这样的字段，SUM结果应该是整数，需要四舍五入
@@ -601,7 +601,7 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                             const formName = formNameMap[foundFormId] || foundFormId;
                             const suffix = getAggregationSuffix('AVG');
                             const uniqueColName = `${formName}_${foundFieldName}_${suffix}`;
-                            const aggExpression = `AVG(CASE WHEN assets.form_id = '${foundFormId}' THEN CAST(COALESCE(NULLIF(batch_row->>'${fieldId}', ''), batch_row->>'${foundFieldName}') AS NUMERIC) ELSE NULL END)`;
+                            const aggExpression = `AVG(CASE WHEN assets.form_id = '${foundFormId}' THEN CAST(COALESCE(NULLIF(batch_row->>'${fieldId}', ''), TRIM(batch_row->>'${foundFieldName}')) AS NUMERIC) ELSE NULL END)`;
                             // 自动添加的聚合字段使用默认2位小数
                             const decimalPlaces = 2;
                             const finalExpression = `ROUND(COALESCE(${aggExpression}, 0)::numeric, ${decimalPlaces})`;
@@ -647,13 +647,13 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                         // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
                         if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
                             const allFieldIds = groupingFieldIdsMap[fieldName];
-                            // 构建COALESCE链，尝试所有可能的字段ID和字段名称
-                            const coalesceChain = allFieldIds.map(id => `batch_row->>'${id}'`).join(', ');
+                            // 构建COALESCE链，尝试所有可能的字段ID和字段名称，并使用TRIM去除空格
+                            const coalesceChain = allFieldIds.map(id => `TRIM(batch_row->>'${id}')`).join(', ');
                             return `COALESCE(${coalesceChain})`;
                         } else {
                             // 单表单或未构建映射，使用原来的逻辑
                             const fieldId = field.fieldId;
-                            return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
+                            return `TRIM(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}'))`;
                         }
                     });
 
@@ -754,13 +754,13 @@ router.post('/:id/execute', authenticateToken, async (req, res, next) => {
                         // 如果有多表单且已构建了字段ID映射，使用所有可能的字段ID
                         if (Object.keys(groupingFieldIdsMap).length > 0 && groupingFieldIdsMap[fieldName]) {
                             const allFieldIds = groupingFieldIdsMap[fieldName];
-                            // 构建COALESCE链，尝试所有可能的字段ID和字段名称
-                            const coalesceChain = allFieldIds.map(id => `batch_row->>'${id}'`).join(', ');
+                            // 构建COALESCE链，尝试所有可能的字段ID和字段名称，并使用TRIM去除空格
+                            const coalesceChain = allFieldIds.map(id => `TRIM(batch_row->>'${id}')`).join(', ');
                             return `COALESCE(${coalesceChain})`;
                         } else {
                             // 单表单或未构建映射，使用原来的逻辑
                             const fieldId = field.fieldId;
-                            return `COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}')`;
+                            return `TRIM(COALESCE(batch_row->>'${fieldId}', batch_row->>'${fieldName}'))`;
                         }
                     });
 
